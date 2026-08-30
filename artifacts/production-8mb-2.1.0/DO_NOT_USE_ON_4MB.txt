@@ -1,0 +1,7 @@
+OBSOLETE PACKAGE - DO NOT FLASH TO ESP32-C3 MINI 4 MB
+
+This directory contains an earlier 8 MB A/B experiment. It is incompatible with
+the 4 MB production hardware and may address flash space that does not exist.
+
+Use the production-4mb package containing the permanent recovery updater,
+main firmware, assets, partition table, and 4 MB factory flash instructions.

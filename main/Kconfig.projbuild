@@ -1,0 +1,390 @@
+menu "Xiaozhi Assistant"
+
+config OTA_URL
+    string "Default OTA URL"
+    default "https://api.tenclass.net/xiaozhi/ota/"
+    help
+        The application will access this URL to check for new firmwares and server address.
+
+choice
+    prompt "Flash Assets"
+    default FLASH_DEFAULT_ASSETS
+    help
+        Select the assets to flash.
+
+    config FLASH_NONE_ASSETS
+        bool "Do not flash assets"
+    config FLASH_DEFAULT_ASSETS
+        bool "Flash Default Assets"
+    config FLASH_CUSTOM_ASSETS
+        bool "Flash Custom Assets"
+endchoice
+
+config CUSTOM_ASSETS_FILE
+    depends on FLASH_CUSTOM_ASSETS
+    string "Custom Assets File"
+    default "assets.bin"
+    help
+        The custom assets file to flash.
+        It can be a local file relative to the project directory or a remote url.
+
+choice
+    prompt "Default Language"
+    default LANGUAGE_EN_US
+    help
+        Select device display language
+
+    config LANGUAGE_ZH_CN
+        bool "Chinese"
+    config LANGUAGE_ZH_TW
+        bool "Chinese Traditional"
+    config LANGUAGE_EN_US
+        bool "English"
+    config LANGUAGE_JA_JP
+        bool "Japanese"
+    config LANGUAGE_KO_KR
+        bool "Korean"
+    config LANGUAGE_VI_VN
+        bool "Vietnamese"
+    config LANGUAGE_TH_TH
+        bool "Thai"
+    config LANGUAGE_DE_DE
+        bool "German"
+    config LANGUAGE_FR_FR
+        bool "French"
+    config LANGUAGE_ES_ES
+        bool "Spanish"
+    config LANGUAGE_IT_IT
+        bool "Italian"
+    config LANGUAGE_RU_RU
+        bool "Russian"
+    config LANGUAGE_AR_SA
+        bool "Arabic"
+    config LANGUAGE_HI_IN
+        bool "Hindi"
+    config LANGUAGE_PT_PT
+        bool "Portuguese"
+    config LANGUAGE_PL_PL
+        bool "Polish"
+    config LANGUAGE_CS_CZ
+        bool "Czech"
+    config LANGUAGE_FI_FI
+        bool "Finnish"
+    config LANGUAGE_TR_TR
+        bool "Turkish"
+    config LANGUAGE_ID_ID
+        bool "Indonesian"
+    config LANGUAGE_UK_UA
+        bool "Ukrainian"
+    config LANGUAGE_RO_RO
+        bool "Romanian"
+    config LANGUAGE_BG_BG
+        bool "Bulgarian"
+    config LANGUAGE_CA_ES
+        bool "Catalan"
+    config LANGUAGE_DA_DK
+        bool "Danish"
+    config LANGUAGE_EL_GR
+        bool "Greek"
+    config LANGUAGE_FA_IR
+        bool "Persian"
+    config LANGUAGE_FIL_PH
+        bool "Filipino"
+    config LANGUAGE_HE_IL
+        bool "Hebrew"
+    config LANGUAGE_HR_HR
+        bool "Croatian"
+    config LANGUAGE_HU_HU
+        bool "Hungarian"
+    config LANGUAGE_MS_MY
+        bool "Malay"
+    config LANGUAGE_NB_NO
+        bool "Norwegian"
+    config LANGUAGE_NL_NL
+        bool "Dutch"
+    config LANGUAGE_SK_SK
+        bool "Slovak"
+    config LANGUAGE_SL_SI
+        bool "Slovenian"
+    config LANGUAGE_SV_SE
+        bool "Swedish"
+    config LANGUAGE_SR_RS
+        bool "Serbian"
+endchoice
+
+choice BOARD_TYPE
+    prompt "Board Type"
+    default BOARD_TYPE_ESP32C3_INMP441
+    help
+        Board type.
+    config BOARD_TYPE_ESP32C3_INMP441
+        bool "ESP32-C3 INMP441+MAX98357A (Custom)"
+        depends on IDF_TARGET_ESP32C3
+endchoice
+
+choice WAKE_WORD_TYPE
+    prompt "Wake Word Implementation Type"
+    default USE_ESP_WAKE_WORD
+    help
+        Choose the type of wake word implementation to use
+
+    config WAKE_WORD_DISABLED
+        bool "Disabled"
+        help
+            Disable wake word detection
+
+    config USE_ESP_WAKE_WORD
+        bool "Wakenet model without AFE"
+        depends on IDF_TARGET_ESP32C3
+        help
+            Support ESP32 C3
+endchoice
+
+choice WAKE_WORD_SELECTION
+    prompt "Wake Word Selection"
+    default WAKE_WORD_HI_LEXIN
+    depends on USE_ESP_WAKE_WORD
+    help
+        Select which wake word to use
+
+    config WAKE_WORD_HI_ESP
+        bool "Hi ESP"
+    config WAKE_WORD_HI_JASON
+        bool "Hi Jason"
+    config WAKE_WORD_HI_LEXIN
+        bool "Hi Lexin"
+    config WAKE_WORD_NI_HAO_XIAOZHI
+        bool "Ni Hao Xiaozhi"
+endchoice
+
+menu "WiFi Configuration"
+
+config WIFI_MAX_SSIDS
+    int "Maximum saved SSIDs"
+    default 3
+    range 1 10
+    help
+        Number of WiFi SSIDs to save. Device will try each one when connecting.
+
+config WIFI_REMEMBER_BSSID
+    bool "Remember BSSID when connecting"
+    default y
+    help
+        Save the BSSID (AP MAC address) for faster reconnection.
+
+config WIFI_5G_SUPPORT
+    bool "Enable 5GHz WiFi support"
+    default n
+    help
+        Allow connecting to 5GHz WiFi networks. Only works on ESP32-S3.
+
+config WIFI_MAX_TX_POWER
+    int "WiFi Max TX Power (dBm)"
+    default 20
+    range 8 20
+    help
+        Maximum WiFi transmission power. Lower values save battery.
+
+endmenu
+
+menu "Power Management"
+
+config ENABLE_SLEEP_MODE
+    bool "Enable Sleep Mode"
+    default n
+    help
+        Enable light sleep mode when idle to save power.
+
+config SLEEP_TIMEOUT_SEC
+    int "Sleep timeout (seconds)"
+    default 60
+    depends on ENABLE_SLEEP_MODE
+    range 10 600
+    help
+        Time in seconds before entering sleep mode when idle.
+
+config ENABLE_BATTERY_MONITOR
+    bool "Enable Battery Monitoring"
+    default n
+    help
+        Enable battery level monitoring via ADC.
+
+config BATTERY_ADC_PIN
+    int "Battery ADC Pin"
+    default 0
+    depends on ENABLE_BATTERY_MONITOR
+    range 0 9
+    help
+        GPIO pin for battery voltage measurement.
+
+endmenu
+
+menu "Display Configuration"
+
+choice DISPLAY_TYPE
+    prompt "Display Type"
+    default DISPLAY_OLED_SSD1306
+    help
+        Select the display type
+
+    config DISPLAY_NONE
+        bool "No Display"
+    config DISPLAY_OLED_SSD1306
+        bool "OLED SSD1306 128x64"
+    config DISPLAY_OLED_SSD1306_12832
+        bool "OLED SSD1306 128x32"
+    config DISPLAY_LCD_ST7789
+        bool "LCD ST7789 240x240"
+        depends on IDF_TARGET_ESP32S3
+    config DISPLAY_LCD_ILI9341
+        bool "LCD ILI9341 240x320"
+        depends on IDF_TARGET_ESP32S3
+    config DISPLAY_AMOLED
+        bool "AMOLED Display"
+        depends on IDF_TARGET_ESP32S3
+endchoice
+
+choice OLED_MODE
+    prompt "OLED Display Mode"
+    default OLED_MODE_CLASSIC
+    depends on DISPLAY_OLED_SSD1306 || DISPLAY_OLED_SSD1306_12832
+    help
+        Select OLED display mode
+
+    config OLED_MODE_CLASSIC
+        bool "Classic"
+    config OLED_MODE_AMOLED
+        bool "Animated"
+endchoice
+
+endmenu
+
+menu "4G Cellular Configuration"
+
+config ENABLE_4G_MODULE
+    bool "Enable 4G Cellular Module"
+    default n
+    help
+        Enable support for 4G cellular modules (ML307R, EC801E, NT26).
+
+choice MODULE_4G_TYPE
+    prompt "4G Module Type"
+    default MODULE_4G_ML307R
+    depends on ENABLE_4G_MODULE
+    help
+        Select the 4G module type
+
+    config MODULE_4G_ML307R
+        bool "ML307R"
+    config MODULE_4G_EC801E
+        bool "EC801E"
+    config MODULE_4G_NT26
+        bool "NT26"
+endchoice
+
+config MODULE_4G_TX_PIN
+    int "4G Module TX Pin"
+    default 17
+    depends on ENABLE_4G_MODULE
+    range 0 21
+    help
+        GPIO pin for 4G module UART TX
+
+config MODULE_4G_RX_PIN
+    int "4G Module RX Pin"
+    default 18
+    depends on ENABLE_4G_MODULE
+    range 0 21
+    help
+        GPIO pin for 4G module UART RX
+
+endmenu
+
+menu "Camera Configuration"
+
+config ENABLE_CAMERA
+    bool "Enable Camera Support"
+    default n
+    depends on IDF_TARGET_ESP32S3
+    help
+        Enable camera module support for vision features.
+
+choice CAMERA_TYPE
+    prompt "Camera Module Type"
+    default CAMERA_OV2640
+    depends on ENABLE_CAMERA
+    help
+        Select the camera module type
+
+    config CAMERA_OV2640
+        bool "OV2640"
+    config CAMERA_OV5640
+        bool "OV5640"
+endchoice
+
+endmenu
+
+menu "Dual-mode boot"
+
+config ENABLE_CHRONCHI_MODE
+    bool "Enable custom Chronchi JSON BLE boot mode"
+    default y if BOARD_TYPE_ESP32C3_INMP441
+    depends on IDF_TARGET_ESP32C3 && BT_NIMBLE_ENABLED
+    select BT_NIMBLE_ROLE_PERIPHERAL
+    select BT_NIMBLE_ROLE_BROADCASTER
+    select BT_NIMBLE_GATT_SERVER
+    help
+        Build the mutually exclusive Chronchi custom Android BLE peripheral mode.
+        Runtime selection is stored in NVS system_mode/boot_mode.
+
+config CHRONCHI_DEFAULT_MODE
+    bool "Use Chronchi as the first-boot mode"
+    default n
+    depends on ENABLE_CHRONCHI_MODE
+    help
+        Select Chronchi when NVS has no stored boot-mode preference. Enable
+        this for retail ESPBridge devices; keep it disabled on Xiaozhi-first
+        development units.
+
+config CHRONCHI_RECOVERY_OTA
+    bool "Use the 4 MB factory-recovery update layout"
+    default n
+    depends on ENABLE_CHRONCHI_MODE
+    help
+        Keep one full product application in ota_0 and a small permanent BLE
+        updater in the factory partition. The main firmware reboots into the
+        recovery updater before Android transfers a signed image. This is the
+        safe update strategy for ESP32-C3 Mini modules with 4 MB flash.
+
+endmenu
+
+config RECEIVE_CUSTOM_MESSAGE
+    bool "Enable Custom Message Reception"
+    default n
+    help
+        Enable custom message reception, allow the device to receive custom messages from the server (preferably through the MQTT protocol)
+
+menu "WiFi Configuration Method"
+    help
+        WiFi Configuration Method Selection
+    config USE_HOTSPOT_WIFI_PROVISIONING
+        bool "Hotspot"
+        default y
+        help
+            Use WiFi Hotspot to transmit WiFi configuration data
+    config USE_ACOUSTIC_WIFI_PROVISIONING
+        bool "Acoustic"
+        help
+            Use audio signal to transmit WiFi configuration data
+
+    config USE_ESP_BLUFI_WIFI_PROVISIONING
+        bool "Esp Blufi"
+        help
+            Use esp blufi protocol to transmit WiFi configuration data
+        select BT_ENABLED
+        select BT_BLE_42_FEATURES_SUPPORTED
+        select BT_BLE_BLUFI_ENABLE
+        select MBEDTLS_DHM_C
+endmenu
+
+endmenu

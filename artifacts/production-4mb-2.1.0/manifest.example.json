@@ -1,0 +1,12 @@
+{
+    "schema":  2,
+    "board":  "esp32c3-inmp441",
+    "version":  "2.1.0",
+    "size":  2681920,
+    "sha256":  "6422399ffca7d2a4a8cc9ec4126ea384f5151312930da9fe89de45efbeaa5987",
+    "url":  "https://firmware.example.invalid/chronchi/2.1.0/chronchi-main.bin",
+    "mandatory":  false,
+    "notes":  "ESP32-C3 4MB recovery OTA production example",
+    "deviceSignature":  "MEUCIGfdh46U33SPvmIskzBdH2+RHQy5uGR43PyfDmbCWsv9AiEAu+3t/uj5fTS65zuThaLv2p4oQpiTThbXPWTDMAxeWm8=",
+    "signature":  "MEUCIQCo/hGPKzvPnEaZLVZ+wGmwfNPI0KNv1CD66v2hL/8FRwIgZo28ob5R3tC6udvDbiDdYqESpcx81RCRQxUZw5SoXDU="
+}

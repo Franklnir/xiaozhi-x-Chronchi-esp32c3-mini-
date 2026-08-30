@@ -1,0 +1,50 @@
+Command: cmake -G Ninja -DPYTHON_DEPS_CHECKED=1 -DPYTHON=C:\Users\frank\.espressif\python_env\idf5.5_py3.11_env\Scripts\python.exe -DESP_PLATFORM=1 -DCCACHE_ENABLE=0 C:\Users\frank\Downloads\xiaozhi-AI-esp32c3-mini-main\recovery
+-- IDF_TARGET is not set, guessed 'esp32c3' from sdkconfig 'C:/Users/frank/Downloads/xiaozhi-AI-esp32c3-mini-main/recovery/sdkconfig'
+-- Found Git: C:/Program Files/Git/cmd/git.exe (found version "2.51.2.windows.1")
+-- Minimal build - OFF
+-- The C compiler identification is GNU 14.2.0
+-- The CXX compiler identification is GNU 14.2.0
+-- The ASM compiler identification is GNU
+-- Found assembler: C:/Espressif/tools/riscv32-esp-elf/esp-14.2.0_20241119/riscv32-esp-elf/bin/riscv32-esp-elf-gcc.exe
+-- Detecting C compiler ABI info
+-- Detecting C compiler ABI info - done
+-- Check for working C compiler: C:/Espressif/tools/riscv32-esp-elf/esp-14.2.0_20241119/riscv32-esp-elf/bin/riscv32-esp-elf-gcc.exe - skipped
+-- Detecting C compile features
+-- Detecting C compile features - done
+-- Detecting CXX compiler ABI info
+-- Detecting CXX compiler ABI info - done
+-- Check for working CXX compiler: C:/Espressif/tools/riscv32-esp-elf/esp-14.2.0_20241119/riscv32-esp-elf/bin/riscv32-esp-elf-g++.exe - skipped
+-- Detecting CXX compile features
+-- Detecting CXX compile features - done
+-- Building ESP-IDF components for target esp32c3
+-- Project sdkconfig file C:/Users/frank/Downloads/xiaozhi-AI-esp32c3-mini-main/recovery/sdkconfig
+Loading defaults file C:/Users/frank/Downloads/xiaozhi-AI-esp32c3-mini-main/recovery/sdkconfig.defaults...
+-- Adding linker script C:/Espressif/v5.5.1/esp-idf/components/riscv/ld/rom.api.ld
+-- Found Python3: C:/Users/frank/.espressif/python_env/idf5.5_py3.11_env/Scripts/python.exe (found version "3.11.9") found components: Interpreter
+-- Performing Test CMAKE_HAVE_LIBC_PTHREAD
+-- Performing Test CMAKE_HAVE_LIBC_PTHREAD - Success
+-- Found Threads: TRUE
+-- Performing Test C_COMPILER_SUPPORTS_WFORMAT_SIGNEDNESS
+-- Performing Test C_COMPILER_SUPPORTS_WFORMAT_SIGNEDNESS - Success
+-- USING O3
+-- App "chronchi_recovery" version: 1.0.0
+-- Adding linker script C:/Users/frank/Downloads/xiaozhi-AI-esp32c3-mini-main/recovery/build-recovery/esp-idf/esp_system/ld/memory.ld
+-- Adding linker script C:/Users/frank/Downloads/xiaozhi-AI-esp32c3-mini-main/recovery/build-recovery/esp-idf/esp_system/ld/sections.ld.in
+-- Adding linker script C:/Espressif/v5.5.1/esp-idf/components/esp_rom/esp32c3/ld/esp32c3.rom.ld
+-- Adding linker script C:/Espressif/v5.5.1/esp-idf/components/esp_rom/esp32c3/ld/esp32c3.rom.api.ld
+-- Adding linker script C:/Espressif/v5.5.1/esp-idf/components/esp_rom/esp32c3/ld/esp32c3.rom.bt_funcs.ld
+-- Adding linker script C:/Espressif/v5.5.1/esp-idf/components/esp_rom/esp32c3/ld/esp32c3.rom.libgcc.ld
+-- Adding linker script C:/Espressif/v5.5.1/esp-idf/components/esp_rom/esp32c3/ld/esp32c3.rom.version.ld
+-- Adding linker script C:/Espressif/v5.5.1/esp-idf/components/esp_rom/esp32c3/ld/esp32c3.rom.ble_cca.ld
+-- Adding linker script C:/Espressif/v5.5.1/esp-idf/components/esp_rom/esp32c3/ld/esp32c3.rom.ble_test.ld
+-- Adding linker script C:/Espressif/v5.5.1/esp-idf/components/esp_rom/esp32c3/ld/esp32c3.rom.eco3.ld
+-- Adding linker script C:/Espressif/v5.5.1/esp-idf/components/esp_rom/esp32c3/ld/esp32c3.rom.eco3_bt_funcs.ld
+-- Adding linker script C:/Espressif/v5.5.1/esp-idf/components/esp_rom/esp32c3/ld/esp32c3.rom.libc.ld
+-- Adding linker script C:/Espressif/v5.5.1/esp-idf/components/esp_rom/esp32c3/ld/esp32c3.rom.libc-suboptimal_for_misaligned_mem.ld
+-- Adding linker script C:/Espressif/v5.5.1/esp-idf/components/esp_rom/esp32c3/ld/esp32c3.rom.newlib.ld
+-- Adding linker script C:/Espressif/v5.5.1/esp-idf/components/soc/esp32c3/ld/esp32c3.peripherals.ld
+-- Components: app_update bootloader bootloader_support bt cxx efuse esp_app_format esp_bootloader_format esp_coex esp_common esp_driver_gpio esp_driver_spi esp_driver_uart esp_driver_usb_serial_jtag esp_event esp_gdbstub esp_hw_support esp_mm esp_netif esp_netif_stack esp_partition esp_phy esp_pm esp_ringbuf esp_rom esp_security esp_system esp_timer esp_vfs_console esp_wifi esptool_py freertos hal heap log lwip main mbedtls newlib nvs_flash partition_table pthread riscv soc spi_flash vfs wpa_supplicant
+-- Component paths: C:/Espressif/v5.5.1/esp-idf/components/app_update C:/Espressif/v5.5.1/esp-idf/components/bootloader C:/Espressif/v5.5.1/esp-idf/components/bootloader_support C:/Espressif/v5.5.1/esp-idf/components/bt C:/Espressif/v5.5.1/esp-idf/components/cxx C:/Espressif/v5.5.1/esp-idf/components/efuse C:/Espressif/v5.5.1/esp-idf/components/esp_app_format C:/Espressif/v5.5.1/esp-idf/components/esp_bootloader_format C:/Espressif/v5.5.1/esp-idf/components/esp_coex C:/Espressif/v5.5.1/esp-idf/components/esp_common C:/Espressif/v5.5.1/esp-idf/components/esp_driver_gpio C:/Espressif/v5.5.1/esp-idf/components/esp_driver_spi C:/Espressif/v5.5.1/esp-idf/components/esp_driver_uart C:/Espressif/v5.5.1/esp-idf/components/esp_driver_usb_serial_jtag C:/Espressif/v5.5.1/esp-idf/components/esp_event C:/Espressif/v5.5.1/esp-idf/components/esp_gdbstub C:/Espressif/v5.5.1/esp-idf/components/esp_hw_support C:/Espressif/v5.5.1/esp-idf/components/esp_mm C:/Espressif/v5.5.1/esp-idf/components/esp_netif C:/Espressif/v5.5.1/esp-idf/components/esp_netif_stack C:/Espressif/v5.5.1/esp-idf/components/esp_partition C:/Espressif/v5.5.1/esp-idf/components/esp_phy C:/Espressif/v5.5.1/esp-idf/components/esp_pm C:/Espressif/v5.5.1/esp-idf/components/esp_ringbuf C:/Espressif/v5.5.1/esp-idf/components/esp_rom C:/Espressif/v5.5.1/esp-idf/components/esp_security C:/Espressif/v5.5.1/esp-idf/components/esp_system C:/Espressif/v5.5.1/esp-idf/components/esp_timer C:/Espressif/v5.5.1/esp-idf/components/esp_vfs_console C:/Espressif/v5.5.1/esp-idf/components/esp_wifi C:/Espressif/v5.5.1/esp-idf/components/esptool_py C:/Espressif/v5.5.1/esp-idf/components/freertos C:/Espressif/v5.5.1/esp-idf/components/hal C:/Espressif/v5.5.1/esp-idf/components/heap C:/Espressif/v5.5.1/esp-idf/components/log C:/Espressif/v5.5.1/esp-idf/components/lwip C:/Users/frank/Downloads/xiaozhi-AI-esp32c3-mini-main/recovery/main C:/Espressif/v5.5.1/esp-idf/components/mbedtls C:/Espressif/v5.5.1/esp-idf/components/newlib C:/Espressif/v5.5.1/esp-idf/components/nvs_flash C:/Espressif/v5.5.1/esp-idf/components/partition_table C:/Espressif/v5.5.1/esp-idf/components/pthread C:/Espressif/v5.5.1/esp-idf/components/riscv C:/Espressif/v5.5.1/esp-idf/components/soc C:/Espressif/v5.5.1/esp-idf/components/spi_flash C:/Espressif/v5.5.1/esp-idf/components/vfs C:/Espressif/v5.5.1/esp-idf/components/wpa_supplicant
+-- Configuring done (65.6s)
+-- Generating done (4.6s)
+-- Build files have been written to: C:/Users/frank/Downloads/xiaozhi-AI-esp32c3-mini-main/recovery/build-recovery

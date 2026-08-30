@@ -1,0 +1,10 @@
+# ESPBridge production layout for ESP32-C3 Mini with 4 MB flash.
+# The immutable factory app is the BLE recovery updater. The full product app
+# lives in ota_0. Interrupted updates keep booting recovery and can be retried.
+# Name,     Type, SubType, Offset,   Size,      Flags
+nvs,        data, nvs,     0x9000,   0x4000,
+otadata,    data, ota,     0xd000,   0x2000,
+phy_init,   data, phy,     0xf000,   0x1000,
+rescue,     app,  factory, 0x10000,  0x90000,
+main,       app,  ota_0,   0xa0000,  0x2a0000,
+assets,     data, spiffs,  0x340000, 0xc0000,

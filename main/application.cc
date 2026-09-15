@@ -1246,7 +1246,7 @@ bool Application::TryHandleLocalSongCommand(const std::string& text) {
     } else if (song_index == 3) {
         display->ShowNotification("song3.ogg not found");
     } else {
-        display->ShowNotification("song1.ogg not found");
+        display->ShowNotification("Gunakan YouTube stream");
     }
     audio_service_.PlaySound(Lang::Sounds::OGG_EXCLAMATION);
     return true;

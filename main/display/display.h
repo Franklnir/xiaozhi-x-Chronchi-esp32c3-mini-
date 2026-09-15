@@ -48,7 +48,7 @@ public:
     virtual void UpdateStatusBar(bool update_all = false);
     virtual void SetPowerSaveMode(bool on);
     virtual void SetFaceState(FaceState state) { (void)state; }
-    virtual void ShowModeMenu(bool chronchi_selected);
+    virtual void ShowModeMenu(int selected_mode);
     virtual void HideModeMenu();
     virtual void ShowModeSwitching(const char* mode_name);
     virtual void SetChronchiScreen(const ChronchiScreen& screen);
@@ -71,7 +71,7 @@ protected:
 class DisplayLockGuard {
 public:
     DisplayLockGuard(Display *display) : display_(display) {
-        if (!display_->Lock(30000)) {
+        if (!display_->Lock(5000)) {
             ESP_LOGE("Display", "Failed to lock display");
         }
     }

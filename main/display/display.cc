@@ -1,17 +1,4 @@
-#include <esp_log.h>
-#include <esp_err.h>
-#include <string>
-#include <cstdlib>
-#include <cstring>
-#include <font_awesome.h>
-
 #include "display.h"
-#include "board.h"
-#include "application.h"
-#include "audio_codec.h"
-#include "settings.h"
-#include "assets/lang_config.h"
-#include "chronchi/chronchi_models.h"
 
 #define TAG "Display"
 
@@ -22,42 +9,41 @@ Display::~Display() {
 }
 
 void Display::SetStatus(const char* status) {
-    ESP_LOGW(TAG, "SetStatus: %s", status);
+    ESP_LOGI(TAG, "SetStatus: %s", status ? status : "(null)");
+}
+
+void Display::ShowNotification(const char* notification, int duration_ms) {
+    ESP_LOGI(TAG, "ShowNotification: %s (duration=%d)", notification ? notification : "(null)", duration_ms);
 }
 
 void Display::ShowNotification(const std::string &notification, int duration_ms) {
     ShowNotification(notification.c_str(), duration_ms);
 }
 
-void Display::ShowNotification(const char* notification, int duration_ms) {
-    ESP_LOGW(TAG, "ShowNotification: %s", notification);
-}
-
-void Display::UpdateStatusBar(bool update_all) {
-}
-
-
 void Display::SetEmotion(const char* emotion) {
-    ESP_LOGW(TAG, "SetEmotion: %s", emotion);
+    ESP_LOGI(TAG, "SetEmotion: %s", emotion ? emotion : "(null)");
 }
 
 void Display::SetChatMessage(const char* role, const char* content) {
-    ESP_LOGW(TAG, "Role:%s", role);
-    ESP_LOGW(TAG, "     %s", content);
+    ESP_LOGI(TAG, "SetChatMessage: role=%s content=%s",
+             role ? role : "(null)", content ? content : "(null)");
 }
 
 void Display::SetTheme(Theme* theme) {
     current_theme_ = theme;
-    Settings settings("display", true);
-    settings.SetString("theme", theme->name());
+}
+
+void Display::UpdateStatusBar(bool update_all) {
 }
 
 void Display::SetPowerSaveMode(bool on) {
     ESP_LOGW(TAG, "SetPowerSaveMode: %d", on);
 }
 
-void Display::ShowModeMenu(bool chronchi_selected) {
-    ShowNotification(chronchi_selected ? "Mode: > Chronchi" : "Mode: > Xiaozhi", 10000);
+void Display::ShowModeMenu(int selected_mode) {
+    static const char* labels[] = {"Mode: > Xiaozhi", "Mode: > Chronchi", "Mode: > Xichi"};
+    int idx = (selected_mode >= 0 && selected_mode <= 2) ? selected_mode : 0;
+    ShowNotification(labels[idx], 10000);
 }
 
 void Display::HideModeMenu() {
@@ -70,7 +56,4 @@ void Display::ShowModeSwitching(const char* mode_name) {
 }
 
 void Display::SetChronchiScreen(const ChronchiScreen& screen) {
-    ESP_LOGI(TAG, "Chronchi type=%u app=%s time=%s primary=%s secondary=%s footer=%s",
-             static_cast<unsigned>(screen.type), screen.source_app, screen.time,
-             screen.primary, screen.secondary, screen.footer);
 }

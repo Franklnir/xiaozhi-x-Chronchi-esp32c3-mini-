@@ -40,43 +40,80 @@ void Protocol::SetError(const std::string& message) {
 }
 
 void Protocol::SendAbortSpeaking(AbortReason reason) {
-    std::string message = "{\"session_id\":\"" + session_id_ + "\",\"type\":\"abort\"";
+    cJSON* root = cJSON_CreateObject();
+    cJSON_AddStringToObject(root, "session_id", session_id_.c_str());
+    cJSON_AddStringToObject(root, "type", "abort");
     if (reason == kAbortReasonWakeWordDetected) {
-        message += ",\"reason\":\"wake_word_detected\"";
+        cJSON_AddStringToObject(root, "reason", "wake_word_detected");
     }
-    message += "}";
+    auto json_str = cJSON_PrintUnformatted(root);
+    std::string message(json_str);
+    cJSON_free(json_str);
+    cJSON_Delete(root);
     SendText(message);
 }
 
 void Protocol::SendWakeWordDetected(const std::string& wake_word) {
-    std::string json = "{\"session_id\":\"" + session_id_ + 
-                      "\",\"type\":\"listen\",\"state\":\"detect\",\"text\":\"" + wake_word + "\"}";
-    SendText(json);
+    cJSON* root = cJSON_CreateObject();
+    cJSON_AddStringToObject(root, "session_id", session_id_.c_str());
+    cJSON_AddStringToObject(root, "type", "listen");
+    cJSON_AddStringToObject(root, "state", "detect");
+    cJSON_AddStringToObject(root, "text", wake_word.c_str());
+    auto json_str = cJSON_PrintUnformatted(root);
+    std::string message(json_str);
+    cJSON_free(json_str);
+    cJSON_Delete(root);
+    SendText(message);
 }
 
 void Protocol::SendStartListening(ListeningMode mode) {
     ESP_LOGI(TAG, "SendStartListening mode=%d session=%s",
              static_cast<int>(mode), session_id_.c_str());
-    std::string message = "{\"session_id\":\"" + session_id_ + "\"";
-    message += ",\"type\":\"listen\",\"state\":\"start\"";
+    cJSON* root = cJSON_CreateObject();
+    cJSON_AddStringToObject(root, "session_id", session_id_.c_str());
+    cJSON_AddStringToObject(root, "type", "listen");
+    cJSON_AddStringToObject(root, "state", "start");
     if (mode == kListeningModeRealtime) {
-        message += ",\"mode\":\"realtime\"";
+        cJSON_AddStringToObject(root, "mode", "realtime");
     } else if (mode == kListeningModeAutoStop) {
-        message += ",\"mode\":\"auto\"";
+        cJSON_AddStringToObject(root, "mode", "auto");
     } else {
-        message += ",\"mode\":\"manual\"";
+        cJSON_AddStringToObject(root, "mode", "manual");
     }
-    message += "}";
+    auto json_str = cJSON_PrintUnformatted(root);
+    std::string message(json_str);
+    cJSON_free(json_str);
+    cJSON_Delete(root);
     SendText(message);
 }
 
 void Protocol::SendStopListening() {
-    std::string message = "{\"session_id\":\"" + session_id_ + "\",\"type\":\"listen\",\"state\":\"stop\"}";
+    cJSON* root = cJSON_CreateObject();
+    cJSON_AddStringToObject(root, "session_id", session_id_.c_str());
+    cJSON_AddStringToObject(root, "type", "listen");
+    cJSON_AddStringToObject(root, "state", "stop");
+    auto json_str = cJSON_PrintUnformatted(root);
+    std::string message(json_str);
+    cJSON_free(json_str);
+    cJSON_Delete(root);
     SendText(message);
 }
 
 void Protocol::SendMcpMessage(const std::string& payload) {
-    std::string message = "{\"session_id\":\"" + session_id_ + "\",\"type\":\"mcp\",\"payload\":" + payload + "}";
+    // payload is already valid JSON, embed it directly
+    cJSON* root = cJSON_CreateObject();
+    cJSON_AddStringToObject(root, "session_id", session_id_.c_str());
+    cJSON_AddStringToObject(root, "type", "mcp");
+    cJSON* payload_obj = cJSON_Parse(payload.c_str());
+    if (payload_obj) {
+        cJSON_AddItemToObject(root, "payload", payload_obj);
+    } else {
+        cJSON_AddStringToObject(root, "payload", payload.c_str());
+    }
+    auto json_str = cJSON_PrintUnformatted(root);
+    std::string message(json_str);
+    cJSON_free(json_str);
+    cJSON_Delete(root);
     SendText(message);
 }
 

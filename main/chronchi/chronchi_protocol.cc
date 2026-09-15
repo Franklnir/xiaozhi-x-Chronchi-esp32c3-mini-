@@ -1,6 +1,7 @@
 #include "chronchi_protocol.h"
 
 #include <cJSON.h>
+#include <esp_log.h>
 
 #include <algorithm>
 #include <cctype>
@@ -53,6 +54,47 @@ void Uppercase(char* destination, size_t capacity, const char* source) {
     destination[i] = '\0';
 }
 
+// Navigation providers do not use one universal spelling for a maneuver.
+// Normalize their kebab-case, snake_case, and human-readable forms into
+// underscore-separated tokens before classifying the direction.
+void NormalizeManeuver(char* destination, size_t capacity, const char* source) {
+    if (capacity == 0) return;
+
+    size_t output = 0;
+    bool separator_pending = false;
+    for (size_t input = 0; source != nullptr && source[input] != '\0'; ++input) {
+        const unsigned char character = static_cast<unsigned char>(source[input]);
+        if (std::isalnum(character)) {
+            if (input > 0 && std::isupper(character) &&
+                std::islower(static_cast<unsigned char>(source[input - 1]))) {
+                separator_pending = true;
+            }
+            if (separator_pending && output > 0 && output + 1 < capacity) {
+                destination[output++] = '_';
+            }
+            separator_pending = false;
+            if (output + 1 >= capacity) break;
+            destination[output++] = static_cast<char>(std::toupper(character));
+        } else if (output > 0) {
+            separator_pending = true;
+        }
+    }
+    destination[output] = '\0';
+}
+
+bool HasManeuverToken(const char* text, const char* token) {
+    if (text == nullptr || token == nullptr || token[0] == '\0') return false;
+    const size_t token_length = std::strlen(token);
+    for (const char* position = std::strstr(text, token); position != nullptr;
+         position = std::strstr(position + 1, token)) {
+        const bool begins_token = position == text || position[-1] == '_';
+        const char after = position[token_length];
+        const bool ends_token = after == '\0' || after == '_';
+        if (begins_token && ends_token) return true;
+    }
+    return false;
+}
+
 bool EqualsIgnoreCase(const char* left, const char* right) {
     if (left == nullptr || right == nullptr) return false;
     while (*left != '\0' && *right != '\0') {
@@ -68,7 +110,7 @@ bool EqualsIgnoreCase(const char* left, const char* right) {
 
 bool IsKnownPacketType(uint8_t value) {
     return value >= static_cast<uint8_t>(ChronchiPacketType::TimeSync) &&
-           value <= static_cast<uint8_t>(ChronchiPacketType::OtaEnterRecovery);
+           value <= static_cast<uint8_t>(ChronchiPacketType::SwitchMode);
 }
 
 ChronchiOrderStatus ParseOrderStatus(const char* value) {
@@ -110,15 +152,63 @@ ChronchiPaymentDirection ParsePaymentDirection(const char* value) {
 }
 
 ChronchiManeuver ParseManeuver(const char* value) {
-    char text[24] = {};
-    Uppercase(text, sizeof(text), value);
-    if (std::strcmp(text, "STRAIGHT") == 0) return ChronchiManeuver::Straight;
-    if (std::strcmp(text, "LEFT") == 0) return ChronchiManeuver::Left;
-    if (std::strcmp(text, "RIGHT") == 0) return ChronchiManeuver::Right;
-    if (std::strcmp(text, "SLIGHT_LEFT") == 0) return ChronchiManeuver::SlightLeft;
-    if (std::strcmp(text, "SLIGHT_RIGHT") == 0) return ChronchiManeuver::SlightRight;
-    if (std::strcmp(text, "ROUNDABOUT") == 0) return ChronchiManeuver::Roundabout;
-    if (std::strcmp(text, "ARRIVE") == 0) return ChronchiManeuver::Arrive;
+    char text[96] = {};
+    NormalizeManeuver(text, sizeof(text), value);
+    if (text[0] == '\0') return ChronchiManeuver::Unknown;
+
+    // Google Maps commonly uses TURN_LEFT, turn-left, KEEP_LEFT, and
+    // ROUNDABOUT_EXIT. Indonesian instructions are accepted as well so the
+    // display remains compatible when the bridge sends a localized phrase.
+    if (HasManeuverToken(text, "ROUNDABOUT") || HasManeuverToken(text, "BUNDARAN")) {
+        return ChronchiManeuver::Roundabout;
+    }
+    if (HasManeuverToken(text, "ARRIVE") || HasManeuverToken(text, "ARRIVAL") ||
+        HasManeuverToken(text, "DESTINATION") || HasManeuverToken(text, "SAMPAI") ||
+        HasManeuverToken(text, "TIBA") || HasManeuverToken(text, "TUJUAN")) {
+        return ChronchiManeuver::Arrive;
+    }
+
+    const bool left = HasManeuverToken(text, "LEFT") || HasManeuverToken(text, "KIRI");
+    const bool right = HasManeuverToken(text, "RIGHT") || HasManeuverToken(text, "KANAN");
+    const bool slight = HasManeuverToken(text, "SLIGHT") || HasManeuverToken(text, "KEEP") ||
+                        HasManeuverToken(text, "BEAR") || HasManeuverToken(text, "FORK") ||
+                        HasManeuverToken(text, "MERGE") || HasManeuverToken(text, "SERONG") ||
+                        HasManeuverToken(text, "SEDIKIT") || HasManeuverToken(text, "AGAK");
+    if (left && slight) return ChronchiManeuver::SlightLeft;
+    if (right && slight) return ChronchiManeuver::SlightRight;
+    if (left) return ChronchiManeuver::Left;
+    if (right) return ChronchiManeuver::Right;
+    if (HasManeuverToken(text, "STRAIGHT") || HasManeuverToken(text, "CONTINUE") ||
+        HasManeuverToken(text, "LURUS") || HasManeuverToken(text, "LANJUT") ||
+        HasManeuverToken(text, "TERUS")) {
+        return ChronchiManeuver::Straight;
+    }
+    return ChronchiManeuver::Unknown;
+}
+
+ChronchiManeuver ParseNavigationManeuver(const cJSON* root) {
+    // ESPBridge V1 uses "maneuver". The remaining fields support bridges that
+    // forward Google Maps' naming without requiring a synchronized app update.
+    constexpr const char* kFields[] = {
+        "maneuver", "maneuverType", "direction", "instruction",
+        "type", "action", "navType", "nav_type",
+    };
+    for (const char* field : kFields) {
+        const ChronchiManeuver maneuver = ParseManeuver(String(root, field));
+        if (maneuver != ChronchiManeuver::Unknown) return maneuver;
+    }
+    // Also try to extract maneuver from the title/directions text
+    // (Google Maps sends "Turn right" in the notification title)
+    constexpr const char* kTextFields[] = {
+        "title", "directions", "primary", "text", "message",
+    };
+    for (const char* field : kTextFields) {
+        const char* text = String(root, field);
+        if (text != nullptr && text[0] != '\0') {
+            const ChronchiManeuver maneuver = ParseManeuver(text);
+            if (maneuver != ChronchiManeuver::Unknown) return maneuver;
+        }
+    }
     return ChronchiManeuver::Unknown;
 }
 
@@ -306,6 +396,23 @@ ChronchiProtocolResult ChronchiProtocol::ParseBufferedJson(ChronchiPacketType pa
                 break;
             }
 
+            // Extract notification data for callback (Xichi mode)
+            ChronchiNotificationData notif_data = {};
+            ChronchiState::CopyText(notif_data.source_app, sizeof(notif_data.source_app),
+                                    StringEither(root, "sourceApp", "app", "ESPBRIDGE"));
+            ChronchiState::CopyText(notif_data.category, sizeof(notif_data.category), category);
+            ChronchiState::CopyText(notif_data.primary_text, sizeof(notif_data.primary_text),
+                                    String(root, "primaryText"));
+            ChronchiState::CopyText(notif_data.secondary_text, sizeof(notif_data.secondary_text),
+                                    String(root, "secondaryText"));
+
+            // If callback registered (Xichi mode), call it and skip ChronchiState update
+            if (on_notification_) {
+                on_notification_(notif_data);
+                break;
+            }
+
+            // Normal Chronchi mode: update ChronchiState for OLED display
             ChronchiScreen screen = {};
             ChronchiState::CopyText(screen.source_app, sizeof(screen.source_app),
                                     StringEither(root, "sourceApp", "app", "ESPBRIDGE"));
@@ -351,7 +458,18 @@ ChronchiProtocolResult ChronchiProtocol::ParseBufferedJson(ChronchiPacketType pa
             }
             ChronchiScreen screen = {};
             screen.type = ChronchiScreenType::Navigation;
-            screen.maneuver = ParseManeuver(String(root, "maneuver"));
+            screen.maneuver = ParseNavigationManeuver(root);
+
+            // Debug: log all navigation fields to diagnose maneuver detection
+            ESP_LOGI("ChronchiProtocol", "Navigation: maneuver=%d", (int)screen.maneuver);
+            {
+                cJSON* item = nullptr;
+                cJSON_ArrayForEach(item, root) {
+                    if (cJSON_IsString(item)) {
+                        ESP_LOGI("ChronchiProtocol", "  nav.%s = \"%s\"", item->string, item->valuestring);
+                    }
+                }
+            }
             ChronchiState::CopyText(screen.source_app, sizeof(screen.source_app), "NAVIGATION");
             ChronchiState::CopyText(screen.time, sizeof(screen.time), String(root, "time", "--:--"));
             const char* distance = String(root, "distanceText");
@@ -402,6 +520,83 @@ ChronchiProtocolResult ChronchiProtocol::ParseBufferedJson(ChronchiPacketType pa
             accepted = false;
             SetError("OTA packet reached JSON protocol");
             break;
+        case ChronchiPacketType::FirebaseConfig: {
+            FirebaseConfigData config = {};
+            ChronchiState::CopyText(config.url, sizeof(config.url), String(root, "url"));
+            ChronchiState::CopyText(config.uid, sizeof(config.uid), String(root, "uid"));
+            ChronchiState::CopyText(config.device_id, sizeof(config.device_id), String(root, "deviceId"));
+            ChronchiState::CopyText(config.secret, sizeof(config.secret), String(root, "secret"));
+
+            if (config.url[0] == '\0' || config.secret[0] == '\0') {
+                accepted = false;
+                SetError("firebase url and secret required");
+                break;
+            }
+
+            if (on_firebase_config_) {
+                on_firebase_config_(config);
+                ESP_LOGI("ChronchiProtocol", "Firebase config received: url=%s uid=%s device=%s",
+                         config.url, config.uid, config.device_id);
+            }
+            break;
+        }
+        case ChronchiPacketType::ClearConfig: {
+            if (on_clear_config_) {
+                on_clear_config_();
+                ESP_LOGI("ChronchiProtocol", "Clear config command received");
+            }
+            break;
+        }
+        case ChronchiPacketType::WifiConfig: {
+            WifiConfigData wifi_config = {};
+            ChronchiState::CopyText(wifi_config.ssid, sizeof(wifi_config.ssid), String(root, "ssid"));
+            ChronchiState::CopyText(wifi_config.password, sizeof(wifi_config.password), String(root, "password"));
+
+            if (wifi_config.ssid[0] == '\0') {
+                accepted = false;
+                SetError("wifi ssid required");
+                break;
+            }
+
+            if (on_wifi_config_) {
+                on_wifi_config_(wifi_config);
+                ESP_LOGI("ChronchiProtocol", "WiFi config received: ssid=%s", wifi_config.ssid);
+            }
+            break;
+        }
+        case ChronchiPacketType::SwitchMode: {
+            const char* target_mode = String(root, "mode");
+            if (target_mode[0] == '\0') {
+                accepted = false;
+                SetError("switch mode target required");
+                break;
+            }
+
+            if (on_switch_mode_) {
+                on_switch_mode_(target_mode);
+                ESP_LOGI("ChronchiProtocol", "Switch mode command received: %s", target_mode);
+            }
+            break;
+        }
+        case ChronchiPacketType::WifiScan: {
+            if (on_wifi_scan_) {
+                on_wifi_scan_();
+                ESP_LOGI("ChronchiProtocol", "WiFi scan requested");
+            }
+            break;
+        }
+        case ChronchiPacketType::FirebaseStatus: {
+            if (on_firebase_status_) {
+                on_firebase_status_();
+                ESP_LOGI("ChronchiProtocol", "Firebase status requested");
+            }
+            break;
+        }
+        case ChronchiPacketType::WifiList: {
+            // WifiList is a response type, not handled here
+            ESP_LOGI("ChronchiProtocol", "WifiList packet received (response type)");
+            break;
+        }
     }
 
     cJSON_Delete(root);

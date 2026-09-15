@@ -21,6 +21,7 @@
 #include "config.h"
 #include "shared_oled.h"
 #include "mode/mode_selector.h"
+#include "mode/mode_store.h"
 #include "settings.h"
 
 #include <esp_err.h>
@@ -38,7 +39,6 @@ class Esp32c3Inmp441Board : public WifiBoard {
 private:
     Button boot_button_;
     Button reset_ssid_button_;
-    std::unique_ptr<AdcBatteryMonitor> battery_monitor_;
     std::unique_ptr<ModeSelector> mode_selector_;
     esp_timer_handle_t hands_free_timer_ = nullptr;
     int64_t last_hands_free_trigger_us_ = 0;
@@ -147,7 +147,7 @@ private:
     void TryStartHandsFreeListening() {
 #if HANDS_FREE_AUTO_LISTEN
         auto& app = Application::GetInstance();
-        if (!hands_free_enabled_) {
+        if (!hands_free_enabled_ || app.IsStandbyActive()) {
             // OFF means truly OFF:
             // - keep wake-word enabled for standby wake
             // - if channel is still listening, close it
@@ -296,34 +296,28 @@ public:
                  RESET_SSID_BUTTON_GPIO, RESET_SSID_LONG_PRESS_MS);
         ESP_LOGI(TAG, "  OLED: SDA=%d, SCL=%d (%dx%d)", 
                  DISPLAY_SDA_PIN, DISPLAY_SCL_PIN, DISPLAY_WIDTH, DISPLAY_HEIGHT);
-        ESP_LOGI(TAG, "  Battery: ADC GPIO %d, divider %.0f/%.0f ohm",
-                 BATTERY_ADC_GPIO,
-                 BATTERY_DIVIDER_UPPER_RESISTOR_OHM,
-                 BATTERY_DIVIDER_LOWER_RESISTOR_OHM);
-        battery_monitor_ = std::make_unique<AdcBatteryMonitor>(
-            BATTERY_ADC_UNIT, BATTERY_ADC_CHANNEL,
-            BATTERY_DIVIDER_UPPER_RESISTOR_OHM,
-            BATTERY_DIVIDER_LOWER_RESISTOR_OHM);
-        
-          mode_selector_ = std::make_unique<ModeSelector>(
-              BootMode::Xiaozhi, GetDisplay(),
-              [this]() {
-                  auto& app = Application::GetInstance();
-                  if (app.GetDeviceState() == kDeviceStateStarting) {
-                      EnterWifiConfigMode();
-                  } else {
-                      app.ToggleChatState();
-                  }
-              },
-              []() {
-                  auto& app = Application::GetInstance();
-                  auto state = app.GetDeviceState();
-                  if (state == kDeviceStateListening || state == kDeviceStateSpeaking) {
-                      app.ToggleChatState();
-                  }
-              });
-          InitializeButtons();
-          InitializeHandsFreeMode();
+
+        if (ModeStore::Current() == BootMode::Xiaozhi) {
+            mode_selector_ = std::make_unique<ModeSelector>(
+                BootMode::Xiaozhi, GetDisplay(),
+                [this]() {
+                    auto& app = Application::GetInstance();
+                    if (app.GetDeviceState() == kDeviceStateStarting) {
+                        EnterWifiConfigMode();
+                    } else {
+                        app.ToggleChatState();
+                    }
+                },
+                []() {
+                    auto& app = Application::GetInstance();
+                    auto state = app.GetDeviceState();
+                    if (state == kDeviceStateListening || state == kDeviceStateSpeaking) {
+                        app.ToggleChatState();
+                    }
+                });
+            InitializeButtons();
+            InitializeHandsFreeMode();
+        }
     }
 
     void OnListeningAutoStop() override {
@@ -358,13 +352,11 @@ public:
     }
 
     bool GetBatteryLevel(int& level, bool& charging, bool& discharging) override {
-        if (battery_monitor_ == nullptr) return false;
-        uint8_t measured_level = 0;
-        if (!battery_monitor_->ReadBatteryLevel(measured_level)) return false;
-        level = measured_level;
-        charging = battery_monitor_->IsCharging();
-        discharging = !charging;
-        return true;
+        // Battery monitor removed — not used in this build
+        level = 0;
+        charging = false;
+        discharging = false;
+        return false;
     }
 };
 

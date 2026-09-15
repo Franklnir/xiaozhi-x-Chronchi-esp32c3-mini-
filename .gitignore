@@ -21,3 +21,5 @@ main/mmap_generate_emoji.h
 production-secrets/
 mmap_generate_*.h
 .clangd
+.commandcode/
+*.log

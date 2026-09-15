@@ -13,6 +13,7 @@ class Display;
 class ModeSelector {
 public:
     static constexpr int kShortClickMs = 700;
+    static constexpr int kDoubleClickWindowMs = 400;
     static constexpr int kEnterMenuMs = 2500;
     static constexpr int kConfirmMs = 2000;
     static constexpr int kMenuTimeoutMs = 10000;
@@ -45,7 +46,9 @@ private:
     bool menu_active_ = false;
     bool must_release_ = false;
     bool confirm_fired_ = false;
+    bool pending_single_click_ = false;
     int64_t press_started_us_ = 0;
+    int64_t last_release_us_ = 0;
     int64_t menu_deadline_us_ = 0;
 };
 

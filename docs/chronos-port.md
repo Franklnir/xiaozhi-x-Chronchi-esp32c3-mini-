@@ -13,6 +13,19 @@ Perbedaan penting:
 - Handshake: firmware mengirim READY setelah notification subscription; Android baru menandai CONNECTED setelah READY.
 - Delivery: firmware mengirim ACK hanya sesudah seluruh fragment diterima dan payload lolos parsing. Payload yang ditolak menghasilkan NACK dan alasan pada serial log.
 
+## Kompatibilitas maneuver navigasi
+
+Paket `Navigation` tetap memakai field utama `maneuver`, tetapi firmware juga
+membaca `maneuverType`, `direction`, atau `instruction` sebagai cadangan. Nilai
+Google Maps seperti `turn-left`, `TURN_LEFT`, `keep right`, dan
+`roundabout-exit` dinormalisasi sebelum memilih ikon. Frasa Indonesia seperti
+`belok kiri`, `lurus`, dan `bundaran` juga didukung.
+
+Ikon yang tersedia adalah lurus, kiri, kanan, serong kiri/kanan, bundaran, dan
+tiba. Aplikasi sebaiknya tetap mengirim `maneuver` dalam kontrak ESPBridge V1
+(`STRAIGHT`, `LEFT`, `RIGHT`, `SLIGHT_LEFT`, `SLIGHT_RIGHT`, `ROUNDABOUT`, atau
+`ARRIVE`) agar arti instruksi tidak ambigu.
+
 Source `main/chronos/` dipertahankan hanya sebagai referensi legacy dan tidak dimasukkan dalam build Chronchi. Jangan memakai UUID, nama perangkat, atau framing Chronos lama pada aplikasi ESPBridge.
 
 Arsitektur runtime tetap eksklusif: boot Chronchi tidak membuat `Board/Application` Xiaozhi, sedangkan boot Xiaozhi tidak menginisialisasi native ESP-NimBLE Chronchi.

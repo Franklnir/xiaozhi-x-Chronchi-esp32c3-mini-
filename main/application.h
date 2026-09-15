@@ -66,6 +66,7 @@ public:
     DeviceState GetDeviceState() const { return state_machine_.GetState(); }
     bool IsVoiceDetected() const { return audio_service_.IsVoiceDetected(); }
     bool IsWifiResetConfirmationPending();
+    bool IsStandbyActive() const { return esp_timer_get_time() < standby_until_us_; }
     
     /**
      * Request state transition
@@ -137,6 +138,7 @@ private:
     AudioService audio_service_;
     std::unique_ptr<Ota> ota_;
 
+
     bool has_server_time_ = false;
     bool aborted_ = false;
     bool assets_version_checked_ = false;
@@ -147,6 +149,7 @@ private:
     int64_t wake_word_ignore_until_us_ = 0;
     int64_t last_wake_word_accepted_us_ = 0;
     int64_t listening_started_at_us_ = 0;
+    int64_t standby_until_us_ = 0;  // Hands-free blocked until this time
     int clock_ticks_ = 0;
     TaskHandle_t activation_task_handle_ = nullptr;
 

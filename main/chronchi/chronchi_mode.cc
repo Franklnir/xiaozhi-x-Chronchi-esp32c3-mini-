@@ -3,11 +3,15 @@
 #include "boards/esp32c3-inmp441/config.h"
 #include "boards/esp32c3-inmp441/shared_oled.h"
 #include "display/display.h"
+#include "mode/mode_store.h"
 
 #include <esp_heap_caps.h>
 #include <esp_log.h>
 #include <esp_ota_ops.h>
 #include <esp_timer.h>
+#include <esp_system.h>
+#include <nvs_flash.h>
+#include <nvs.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
 
@@ -29,22 +33,40 @@ void ChronchiMode::Initialize() {
     ESP_LOGI(kTag, "ESPBridge BLE V1 framed JSON mode; upstream Chronos protocol is disabled");
     LogHeap("before OLED/BLE");
 
-    battery_monitor_ = std::make_unique<AdcBatteryMonitor>(
-        BATTERY_ADC_UNIT, BATTERY_ADC_CHANNEL,
-        BATTERY_DIVIDER_UPPER_RESISTOR_OHM,
-        BATTERY_DIVIDER_LOWER_RESISTOR_OHM);
-    ESP_LOGI(kTag, "Battery ADC: GPIO %d, divider %.0f/%.0f ohm",
-             BATTERY_ADC_GPIO,
-             BATTERY_DIVIDER_UPPER_RESISTOR_OHM,
-             BATTERY_DIVIDER_LOWER_RESISTOR_OHM);
-    UpdateBattery(true);
+    // Battery monitor removed — not displayed on OLED
 
     display_ = GetEsp32c3SharedOled(true);
     mode_selector_ = std::make_unique<ModeSelector>(
         BootMode::Chronchi, display_, [this]() {
             if (!ble_.ConfirmPairing()) state_.DismissTransient();
         });
-    button_.OnPressDown([this]() { mode_selector_->OnPressDown(); });
+    button_.OnPressDown([this]() {
+        mode_selector_->OnPressDown();
+
+        // Triple-click detection for clearing WiFi
+        int64_t now = esp_timer_get_time();
+        if (now - last_click_us_ < kTripleClickWindowUs) {
+            click_count_++;
+        } else {
+            click_count_ = 1;
+        }
+        last_click_us_ = now;
+
+        if (click_count_ >= 3) {
+            click_count_ = 0;
+            ESP_LOGI(kTag, "Triple-click detected! Clearing WiFi config...");
+            nvs_handle_t handle;
+            esp_err_t err = nvs_open("wifi", NVS_READWRITE, &handle);
+            if (err == ESP_OK) {
+                nvs_erase_all(handle);
+                nvs_commit(handle);
+                nvs_close(handle);
+                ESP_LOGI(kTag, "WiFi config cleared from NVS");
+                state_.ShowSystem("WIFI", "Cleared!");
+                Render(state_.Snapshot());
+            }
+        }
+    });
     button_.OnPressUp([this]() { mode_selector_->OnPressUp(); });
 
     state_.ShowStartup();
@@ -56,6 +78,69 @@ void ChronchiMode::Initialize() {
         state_.ShowSystem("BLE init failed", esp_err_to_name(ble_status_));
         Render(state_.Snapshot());
     }
+
+    // Firebase config callback removed (Xichi mode deleted)
+    ble_.GetProtocol().on_firebase_config_ = [this](const FirebaseConfigData& config) {
+        ESP_LOGW(kTag, "Firebase config received but Xichi mode is removed, ignoring");
+        state_.ShowSystem("CONFIG", "Ignored (no Xichi)");
+        Render(state_.Snapshot());
+    };
+
+    // Clear config callback removed (Xichi mode deleted)
+    ble_.GetProtocol().on_clear_config_ = [this]() {
+        ESP_LOGW(kTag, "Clear config received but Xichi mode is removed, ignoring");
+    };
+
+    // Register WiFi config callback from BLE
+    ble_.GetProtocol().on_wifi_config_ = [this](const WifiConfigData& wifi_config) {
+        ESP_LOGI(kTag, "WiFi config received via BLE: ssid=%s", wifi_config.ssid);
+        nvs_handle_t handle;
+        esp_err_t err = nvs_open("wifi", NVS_READWRITE, &handle);
+        if (err != ESP_OK) {
+            ESP_LOGE(kTag, "NVS open failed: %s", esp_err_to_name(err));
+            state_.ShowSystem("WIFI", "Save failed!");
+            Render(state_.Snapshot());
+            return;
+        }
+        nvs_set_str(handle, "ssid", wifi_config.ssid);
+        nvs_set_str(handle, "password", wifi_config.password);
+        nvs_set_u8(handle, "configured", 1);
+        nvs_commit(handle);
+        nvs_close(handle);
+        ESP_LOGI(kTag, "WiFi config saved to NVS: %s", wifi_config.ssid);
+        state_.ShowSystem("WIFI", "Saved!");
+        Render(state_.Snapshot());
+    };
+
+    // Register switch mode callback from BLE
+    ble_.GetProtocol().on_switch_mode_ = [this](const char* mode) {
+        ESP_LOGI(kTag, "Switch mode command: %s", mode);
+        if (strcmp(mode, "xiaozhi") == 0) {
+            ModeStore::Save(BootMode::Xiaozhi);
+            state_.ShowSystem("SWITCHING", "Xiaozhi mode...");
+            Render(state_.Snapshot());
+            vTaskDelay(pdMS_TO_TICKS(1000));
+            esp_restart();
+        } else if (strcmp(mode, "chronchi") == 0) {
+            ESP_LOGI(kTag, "Already in Chronchi mode");
+        }
+    };
+
+    // Register WiFi scan callback from BLE
+    ble_.GetProtocol().on_wifi_scan_ = [this]() {
+        ESP_LOGI(kTag, "WiFi scan requested via BLE");
+        // TODO: Implement WiFi scan and send results back via BLE
+        state_.ShowSystem("WIFI", "Scanning...");
+        Render(state_.Snapshot());
+    };
+
+    // Firebase status callback (Xichi mode removed, always "not saved")
+    ble_.GetProtocol().on_firebase_status_ = [this]() {
+        ESP_LOGI(kTag, "Firebase status requested via BLE — Xichi removed, no config");
+        state_.ShowSystem("FIREBASE", "Not available");
+        Render(state_.Snapshot());
+    };
+
     LogHeap("after OLED/BLE");
 
 #if CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE
@@ -74,27 +159,10 @@ void ChronchiMode::Render(const ChronchiSnapshot& snapshot) {
     display_->SetChronchiScreen(snapshot.active);
 }
 
-void ChronchiMode::UpdateBattery(bool force) {
-    if (battery_monitor_ == nullptr) return;
-
-    const int64_t now_us = esp_timer_get_time();
-    if (!force && now_us < battery_refresh_due_us_) return;
-    battery_refresh_due_us_ = now_us +
-        static_cast<int64_t>(BATTERY_REFRESH_INTERVAL_MS) * 1000;
-
-    uint8_t level = 0;
-    if (!battery_monitor_->ReadBatteryLevel(level)) {
-        ESP_LOGW(kTag, "Battery ADC sample is not valid yet");
-        return;
-    }
-    state_.UpdateDeviceBattery(level, battery_monitor_->IsCharging());
-}
-
 [[noreturn]] void ChronchiMode::Run() {
     uint32_t last_revision = UINT32_MAX;
     while (true) {
         if (ble_status_ == ESP_OK) ble_.Poll();
-        UpdateBattery();
 #if CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE
         if (rollback_confirmation_due_us_ != 0 &&
             esp_timer_get_time() >= rollback_confirmation_due_us_) {

@@ -95,7 +95,10 @@ static const ble_gatt_svc_def kServices[] = {
 };
 }  // namespace
 
-ChronchiBle::ChronchiBle(ChronchiState& state) : state_(state), protocol_(state) {}
+ChronchiBle::ChronchiBle(ChronchiState& state, const char* mode)
+    : state_(state), protocol_(state) {
+    ChronchiState::CopyText(mode_, sizeof(mode_), mode);
+}
 
 void ChronchiBle::BuildIdentity() {
     uint8_t mac[6] = {};
@@ -219,6 +222,8 @@ void ChronchiBle::Advertise() {
     ble_gap_adv_params parameters = {};
     parameters.conn_mode = BLE_GAP_CONN_MODE_UND;
     parameters.disc_mode = BLE_GAP_DISC_MODE_GEN;
+    parameters.itvl_min = 0x00A0; // 100 ms (coexistence friendly)
+    parameters.itvl_max = 0x0140; // 200 ms
     result = ble_gap_adv_start(address_type, nullptr, BLE_HS_FOREVER,
                                &parameters, GapEvent, this);
     if (result == 0) {
@@ -247,6 +252,14 @@ int ChronchiBle::GapEvent(ble_gap_event* event, void* arg) {
                          static_cast<unsigned>(event->connect.conn_handle),
                          static_cast<unsigned>(heap_caps_get_free_size(MALLOC_CAP_8BIT)),
                          static_cast<unsigned>(heap_caps_get_minimum_free_size(MALLOC_CAP_8BIT)));
+
+                // Update connection parameters to avoid starving Wi-Fi
+                ble_gap_upd_params conn_params = {};
+                conn_params.itvl_min = 24; // 30 ms
+                conn_params.itvl_max = 40; // 50 ms
+                conn_params.latency = 2;
+                conn_params.supervision_timeout = 500; // 5 seconds
+                ble_gap_update_params(event->connect.conn_handle, &conn_params);
 #if CONFIG_BT_NIMBLE_SECURITY_ENABLE
                 const int security_result = ble_gap_security_initiate(event->connect.conn_handle);
                 if (security_result != 0) {
@@ -459,13 +472,14 @@ bool ChronchiBle::NotifyResponse(const PendingResponse& response) {
             json, sizeof(json),
             "{\"id\":\"%s\",\"name\":\"%s\",\"fw\":\"%s\",\"board\":\"%s\","
             "\"ota\":%s,\"max\":%u,\"secure\":%s,\"slot\":\"%s\","
-            "\"update\":\"%s\",\"role\":\"main\"}",
+            "\"update\":\"%s\",\"role\":\"main\",\"mode\":\"%s\"}",
             device_id_, device_name_, app == nullptr ? "unknown" : app->version, BOARD_NAME,
             ota_.Available() ? "true" : "false",
             static_cast<unsigned>(ota_.MaximumImageSize()),
             kSecurityEnabled ? "true" : "false",
             running == nullptr ? "unknown" : running->label,
-            ota_.Strategy());
+            ota_.Strategy(),
+            mode_);
     } else {
         std::snprintf(json, sizeof(json), "{\"ok\":false,\"error\":\"%.32s\"}",
                       response.error);
@@ -506,4 +520,33 @@ void ChronchiBle::Poll() {
     if (response.kind == ResponseKind::OtaComplete) {
         restart_at_us_.store(esp_timer_get_time() + 800 * 1000);
     }
+}
+
+void ChronchiBle::Stop() {
+    ESP_LOGI(kTag, "Stopping BLE...");
+
+    // Disconnect active connection
+    const uint16_t handle = connection_handle_.load();
+    if (handle != 0xffff) {
+        ble_gap_terminate(handle, BLE_ERR_REM_USER_CONN_TERM);
+        vTaskDelay(pdMS_TO_TICKS(100));
+    }
+
+    // Stop advertising
+    ble_gap_adv_stop();
+
+    // Clear state
+    connection_handle_.store(0xffff);
+    notify_subscribed_.store(false);
+    link_secure_.store(false);
+    ClearResponses();
+    protocol_.Reset();
+    state_.SetSubscribed(false);
+    state_.SetConnection(false);
+
+    // Deinit NimBLE
+    nimble_port_deinit();
+    g_instance = nullptr;
+
+    ESP_LOGI(kTag, "BLE stopped and resources freed");
 }

@@ -1,5 +1,6 @@
 #include "settings_manager.h"
 #include <esp_log.h>
+#include <esp_wifi.h>
 #include <cJSON.h>
 #include <cstring>
 
@@ -93,6 +94,28 @@ bool SettingsManager::LoadFromNvs() {
         settings_.wifi_max_tx_power = i8_value;
     }
     
+    // Check fallback namespaces if not yet set in "xiaozhi"
+    nvs_handle_t aux_nvs;
+    if (nvs_open("display", NVS_READONLY, &aux_nvs) == ESP_OK) {
+        char buf[32] = {};
+        size_t len = sizeof(buf);
+        if (nvs_get_str(aux_nvs, "oled_mode", buf, &len) == ESP_OK && len > 0) {
+            settings_.oled_mode = buf;
+        }
+        nvs_close(aux_nvs);
+    }
+    if (nvs_open("wifi", NVS_READONLY, &aux_nvs) == ESP_OK) {
+        int8_t pwr = 0;
+        if (nvs_get_i8(aux_nvs, "max_tx_power", &pwr) == ESP_OK && pwr > 0) {
+            settings_.wifi_max_tx_power = pwr / 4;
+        }
+        uint8_t bssid = 0;
+        if (nvs_get_u8(aux_nvs, "remember_bssid", &bssid) == ESP_OK) {
+            settings_.wifi_remember_bssid = (bssid != 0);
+        }
+        nvs_close(aux_nvs);
+    }
+
     // Load WiFi credentials
     LoadWifiCredentials();
     
@@ -117,6 +140,27 @@ bool SettingsManager::Save() {
     err |= SaveWifiCredentials();
     
     err |= nvs_commit(nvs_handle_);
+
+    // Also sync to hardware driver namespaces ("display", "wifi", "audio")
+    // so OLED and WiFi station read the updated settings on next boot
+    nvs_handle_t sync_nvs;
+    if (nvs_open("display", NVS_READWRITE, &sync_nvs) == ESP_OK) {
+        nvs_set_str(sync_nvs, "oled_mode", settings_.oled_mode.c_str());
+        nvs_commit(sync_nvs);
+        nvs_close(sync_nvs);
+    }
+    if (nvs_open("wifi", NVS_READWRITE, &sync_nvs) == ESP_OK) {
+        int8_t pwr_quarter = static_cast<int8_t>(settings_.wifi_max_tx_power * 4);
+        nvs_set_i8(sync_nvs, "max_tx_power", pwr_quarter);
+        nvs_set_u8(sync_nvs, "remember_bssid", settings_.wifi_remember_bssid ? 1 : 0);
+        nvs_commit(sync_nvs);
+        nvs_close(sync_nvs);
+    }
+    if (nvs_open("audio", NVS_READWRITE, &sync_nvs) == ESP_OK) {
+        nvs_set_str(sync_nvs, "wake_word", settings_.wake_word.c_str());
+        nvs_commit(sync_nvs);
+        nvs_close(sync_nvs);
+    }
     
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "Failed to save settings: %s", esp_err_to_name(err));
@@ -322,10 +366,29 @@ void SettingsManager::SetLanguage(const std::string& lang) {
     Save();
 }
 
-int SettingsManager::GetWifiMaxTxPower() const { return settings_.wifi_max_tx_power; }
-void SettingsManager::SetWifiMaxTxPower(int power) {
-    settings_.wifi_max_tx_power = power;
+bool SettingsManager::GetWifiRememberBssid() const { return settings_.wifi_remember_bssid; }
+void SettingsManager::SetWifiRememberBssid(bool enabled) {
+    settings_.wifi_remember_bssid = enabled;
     Save();
+}
+
+int SettingsManager::GetWifiMaxTxPower() const { return settings_.wifi_max_tx_power; }
+void SettingsManager::SetWifiMaxTxPower(int power_dbm) {
+    // Clamp to valid range (8-20 dBm)
+    if (power_dbm < 8) power_dbm = 8;
+    if (power_dbm > 20) power_dbm = 20;
+    settings_.wifi_max_tx_power = power_dbm;
+    Save();
+
+    // Apply to WiFi driver: ESP-IDF uses 0.25 dBm units
+    int8_t power_quarter_dbm = static_cast<int8_t>(power_dbm * 4);
+    esp_err_t err = esp_wifi_set_max_tx_power(power_quarter_dbm);
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "Failed to set WiFi TX power to %d dBm: %s",
+                 power_dbm, esp_err_to_name(err));
+    } else {
+        ESP_LOGI(TAG, "WiFi TX power set to %d dBm", power_dbm);
+    }
 }
 
 bool SettingsManager::ResetToDefaults() {

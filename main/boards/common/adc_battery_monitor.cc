@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <esp_log.h>
 
 AdcBatteryMonitor::AdcBatteryMonitor(adc_unit_t adc_unit, adc_channel_t adc_channel,
                                      float upper_resistor, float lower_resistor,

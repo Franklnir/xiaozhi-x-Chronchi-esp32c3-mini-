@@ -5,6 +5,8 @@
 #include "system_info.h"
 #include "settings.h"
 #include "assets/lang_config.h"
+#include "mode/mode_store.h"
+#include "mode/boot_mode.h"
 
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
@@ -23,8 +25,10 @@
 
 static const char *TAG = "WifiBoard";
 
-// Connection timeout in seconds
-static constexpr int CONNECT_TIMEOUT_SEC = 60;
+// Connection timeout in seconds (increased from 15s for weak-signal APs)
+static constexpr int CONNECT_TIMEOUT_SEC = 35;
+// Number of retry attempts before entering config mode
+static constexpr int MAX_CONNECT_RETRIES = 3;
 
 WifiBoard::WifiBoard() {
     // Create connection timeout timer
@@ -93,7 +97,7 @@ void WifiBoard::TryWifiConnect() {
 
     if (have_ssid) {
         // Start connection attempt with timeout
-        ESP_LOGI(TAG, "Starting WiFi connection attempt");
+        ESP_LOGI(TAG, "Starting WiFi connection attempt (retry %d/%d)", connect_retry_count_, MAX_CONNECT_RETRIES);
         esp_timer_start_once(connect_timer_, CONNECT_TIMEOUT_SEC * 1000000ULL);
         WifiManager::GetInstance().StartStation();
     } else {
@@ -109,6 +113,7 @@ void WifiBoard::OnNetworkEvent(NetworkEvent event, const std::string& data) {
         case NetworkEvent::Connected:
             // Stop timeout timer
             esp_timer_stop(connect_timer_);
+            connect_retry_count_ = 0;  // Reset retry counter on success
 #ifdef CONFIG_USE_ESP_BLUFI_WIFI_PROVISIONING
             // make sure blufi resources has been released
             Blufi::GetInstance().deinit();
@@ -151,10 +156,19 @@ void WifiBoard::SetNetworkEventCallback(NetworkEventCallback callback) {
 
 void WifiBoard::OnWifiConnectTimeout(void* arg) {
     auto* board = static_cast<WifiBoard*>(arg);
-    ESP_LOGW(TAG, "WiFi connection timeout, entering config mode");
 
-    WifiManager::GetInstance().StopStation();
-    board->StartWifiConfigMode();
+    board->connect_retry_count_++;
+    if (board->connect_retry_count_ < MAX_CONNECT_RETRIES) {
+        ESP_LOGW(TAG, "WiFi connection timeout, retrying (%d/%d)...", board->connect_retry_count_, MAX_CONNECT_RETRIES);
+        WifiManager::GetInstance().StopStation();
+        vTaskDelay(pdMS_TO_TICKS(1000));
+        board->TryWifiConnect();
+    } else {
+        ESP_LOGW(TAG, "WiFi connection timeout after %d retries, entering config mode", MAX_CONNECT_RETRIES);
+        board->connect_retry_count_ = 0;
+        WifiManager::GetInstance().StopStation();
+        board->StartWifiConfigMode();
+    }
 }
 
 void WifiBoard::StartWifiConfigMode() {

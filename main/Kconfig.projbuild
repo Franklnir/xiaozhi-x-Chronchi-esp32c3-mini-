@@ -6,6 +6,7 @@ config OTA_URL
     help
         The application will access this URL to check for new firmwares and server address.
 
+
 choice
     prompt "Flash Assets"
     default FLASH_DEFAULT_ASSETS
@@ -355,6 +356,34 @@ config CHRONCHI_RECOVERY_OTA
         updater in the factory partition. The main firmware reboots into the
         recovery updater before Android transfers a signed image. This is the
         safe update strategy for ESP32-C3 Mini modules with 4 MB flash.
+
+config ENABLE_XICHI_MODE
+    bool "Enable Xichi mode (Voice Notification Reader)"
+    default y if BOARD_TYPE_ESP32C3_INMP441
+    depends on ENABLE_CHRONCHI_MODE
+    help
+        Xichi mode reads phone notifications from Firebase Realtime Database
+        via Wi-Fi and speaks them aloud using Xiaozhi TTS.
+
+        Setup flow:
+        1. Enter Xichi mode → BLE starts for provisioning (2 min timeout)
+        2. ESPBridge app detects "xichi" mode, sends Firebase config
+        3. Config saved to NVS, BLE stops
+        4. Wi-Fi starts, polls Firebase every 5 seconds
+        5. Notifications read aloud via Xiaozhi TTS
+
+        Features:
+        - BLE provisioning on first setup (auto-detected by app)
+        - Firebase poller reads notifications every 5 seconds
+        - Notifications read aloud via Xiaozhi TTS
+        - No wake word (push-to-talk only)
+        - Volume 100% fixed
+        - BLE freed after provisioning (more RAM for Wi-Fi)
+
+        Requires:
+        - Chronchi mode enabled (for BLE provisioning)
+        - Firebase Database Secret configured in app
+        - Server-side MCP tool: notification.read
 
 endmenu
 

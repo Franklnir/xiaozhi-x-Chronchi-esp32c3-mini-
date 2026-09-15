@@ -9,7 +9,10 @@ enum class BootMode : uint8_t {
 };
 
 inline const char* BootModeName(BootMode mode) {
-    return mode == BootMode::Chronchi ? "Chronchi" : "Xiaozhi";
+    switch (mode) {
+        case BootMode::Chronchi: return "Chronchi";
+        default: return "Xiaozhi";
+    }
 }
 
 #endif  // XIAOZHI_BOOT_MODE_H_

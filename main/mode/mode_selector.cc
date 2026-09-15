@@ -12,6 +12,7 @@
 namespace {
 constexpr char kTag[] = "ModeButton";
 constexpr int64_t MsToUs(int ms) { return static_cast<int64_t>(ms) * 1000; }
+constexpr int kModeCount = 2;  // Xiaozhi, Chronchi
 }  // namespace
 
 ModeSelector::ModeSelector(BootMode current_mode, Display* display,
@@ -51,17 +52,41 @@ ModeSelector::~ModeSelector() {
 }
 
 void ModeSelector::OnPressDown() {
-    std::lock_guard<std::mutex> lock(mutex_);
-    if (pressed_) {
-        return;
+    bool double_click = false;
+    BootMode target_mode = BootMode::Xiaozhi;
+    const int64_t now = esp_timer_get_time();
+
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (pressed_) {
+            return;
+        }
+
+        // Detect fast double-click (second press down within window of first press release)
+        if (!menu_active_ && pending_single_click_) {
+            const int64_t time_since_release_us = now - last_release_us_;
+            if (time_since_release_us <= MsToUs(kDoubleClickWindowMs)) {
+                pending_single_click_ = false;
+                double_click = true;
+                target_mode = (current_mode_ == BootMode::Xiaozhi) ? BootMode::Chronchi : BootMode::Xiaozhi;
+            } else {
+                pending_single_click_ = false;
+            }
+        }
+
+        pressed_ = true;
+        confirm_fired_ = false;
+        press_started_us_ = now;
     }
-    pressed_ = true;
-    confirm_fired_ = false;
-    press_started_us_ = esp_timer_get_time();
+
+    if (double_click) {
+        ESP_LOGI(kTag, "Fast double-click on GPIO 3 detected! Switching mode from %s to %s",
+                 BootModeName(current_mode_), BootModeName(target_mode));
+        Confirm(target_mode);
+    }
 }
 
 void ModeSelector::OnPressUp() {
-    std::function<void()> short_click;
     bool update_menu = false;
     BootMode selected = BootMode::Xiaozhi;
     const int64_t now = esp_timer_get_time();
@@ -80,22 +105,26 @@ void ModeSelector::OnPressUp() {
                 must_release_ = false;
                 menu_deadline_us_ = now + MsToUs(kMenuTimeoutMs);
             } else if (!confirm_fired_ && held_us < MsToUs(kShortClickMs)) {
-                selected_mode_ = selected_mode_ == BootMode::Xiaozhi
-                                     ? BootMode::Chronchi : BootMode::Xiaozhi;
+                // Cycle through 2 modes: Xiaozhi <-> Chronchi
+                int current = static_cast<int>(selected_mode_);
+                int next = (current + 1) % kModeCount;
+                selected_mode_ = static_cast<BootMode>(next);
                 menu_deadline_us_ = now + MsToUs(kMenuTimeoutMs);
                 selected = selected_mode_;
                 update_menu = true;
             }
         } else if (held_us < MsToUs(kShortClickMs)) {
-            short_click = short_click_;
+            // Arm pending single-click. If a 2nd click arrives within kDoubleClickWindowMs,
+            // OnPressDown triggers double-click mode switch. If window expires, Tick fires short_click_.
+            pending_single_click_ = true;
+            last_release_us_ = now;
+        } else {
+            pending_single_click_ = false;
         }
     }
 
     if (update_menu && display_ != nullptr) {
-        display_->ShowModeMenu(selected == BootMode::Chronchi);
-    }
-    if (short_click) {
-        short_click();
+        display_->ShowModeMenu(static_cast<int>(selected));
     }
 }
 
@@ -116,13 +145,24 @@ void ModeSelector::Tick() {
     bool enter_menu = false;
     bool cancel_menu = false;
     bool confirm = false;
+    std::function<void()> fire_single_click;
     BootMode selected = BootMode::Xiaozhi;
     const int64_t now = esp_timer_get_time();
 
     {
         std::lock_guard<std::mutex> lock(mutex_);
+
+        // Fire pending single click if double-click window expired without a second press
+        if (pending_single_click_ && !pressed_) {
+            if (now - last_release_us_ >= MsToUs(kDoubleClickWindowMs)) {
+                pending_single_click_ = false;
+                fire_single_click = short_click_;
+            }
+        }
+
         if (!menu_active_ && pressed_ &&
             now - press_started_us_ >= MsToUs(kEnterMenuMs)) {
+            pending_single_click_ = false;
             menu_active_ = true;
             must_release_ = true;
             selected_mode_ = current_mode_;
@@ -142,13 +182,17 @@ void ModeSelector::Tick() {
         }
     }
 
+    if (fire_single_click) {
+        fire_single_click();
+    }
+
     if (enter_menu) {
         ESP_LOGI(kTag, "Mode menu opened (current=%s)", BootModeName(current_mode_));
         if (before_menu_) {
             before_menu_();
         }
         if (display_ != nullptr) {
-            display_->ShowModeMenu(selected == BootMode::Chronchi);
+            display_->ShowModeMenu(static_cast<int>(selected));
         }
     } else if (cancel_menu) {
         ESP_LOGI(kTag, "Mode menu timed out");
@@ -183,5 +227,6 @@ void ModeSelector::Confirm(BootMode selected) {
     if (display_ != nullptr) {
         display_->ShowModeSwitching(BootModeName(selected));
     }
+    esp_timer_stop(restart_timer_);
     ESP_ERROR_CHECK(esp_timer_start_once(restart_timer_, 700 * 1000));
 }

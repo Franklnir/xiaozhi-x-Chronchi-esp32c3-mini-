@@ -14,6 +14,7 @@
 #include <esp_err.h>
 #include <esp_lvgl_port.h>
 #include <font_awesome.h>
+#include "boards/common/board.h"
 
 #define TAG "OledDisplay"
 
@@ -30,11 +31,10 @@ constexpr int kCompactLabelWidth = 124;
 constexpr int kCompactRowHeight = 13;
 constexpr int kChronchiHeaderY = 0;
 constexpr int kChronchiHeaderHeight = 16;
-constexpr int kChronchiHeaderLeftWidth = 68;
-constexpr int kChronchiHeaderRightX = 68;
-constexpr int kChronchiHeaderRightWidth = 32;
-constexpr int kChronchiBatteryX = 100;
-constexpr int kChronchiBatteryWidth = 28;
+constexpr int kChronchiHeaderLeftX = 2;
+constexpr int kChronchiHeaderLeftWidth = 106;
+constexpr int kChronchiBleIconX = 108;
+constexpr int kChronchiBleIconWidth = 20;
 constexpr int kChronchiBodyX = 3;
 constexpr int kChronchiBodyWidth = 122;
 constexpr int kChronchiBodyRowHeight = 15;
@@ -69,36 +69,9 @@ void ConfigureChronchiBodyLabel(lv_obj_t* label, int y, int height,
     lv_obj_set_style_text_font(label, &lv_font_montserrat_12, 0);
 }
 
-void ConfigureChronchiHeaderPair(lv_obj_t* left, lv_obj_t* right) {
-    ConfigureChronchiLabel(left, 0, kChronchiHeaderY, kChronchiHeaderLeftWidth,
-                           kChronchiHeaderHeight, LV_TEXT_ALIGN_LEFT, LV_LABEL_LONG_CLIP);
-    ConfigureChronchiLabel(right, kChronchiHeaderRightX, kChronchiHeaderY,
-                           kChronchiHeaderRightWidth, kChronchiHeaderHeight,
-                           LV_TEXT_ALIGN_RIGHT, LV_LABEL_LONG_CLIP);
-    lv_obj_set_style_text_font(left, &lv_font_montserrat_14, 0);
-    lv_obj_set_style_text_font(right, &lv_font_montserrat_12, 0);
-}
-
-void ConfigureChronchiNotificationHeaderPair(lv_obj_t* left, lv_obj_t* right) {
-    ConfigureChronchiLabel(left, 0, kChronchiHeaderY, kChronchiHeaderLeftWidth,
-                           kChronchiHeaderHeight, LV_TEXT_ALIGN_LEFT, LV_LABEL_LONG_CLIP);
-    ConfigureChronchiLabel(right, kChronchiHeaderRightX, kChronchiHeaderY,
-                           kChronchiHeaderRightWidth + kChronchiBatteryWidth,
-                           kChronchiHeaderHeight, LV_TEXT_ALIGN_RIGHT, LV_LABEL_LONG_CLIP);
-    lv_obj_set_style_text_font(left, &lv_font_montserrat_14, 0);
-    lv_obj_set_style_text_font(right, &lv_font_montserrat_12, 0);
-}
-
-void ConfigureChronchiBatteryLabel(lv_obj_t* battery) {
-    ConfigureChronchiLabel(battery, kChronchiBatteryX, kChronchiHeaderY,
-                           kChronchiBatteryWidth, kChronchiHeaderHeight,
-                           LV_TEXT_ALIGN_RIGHT, LV_LABEL_LONG_CLIP);
-    lv_obj_set_style_text_font(battery, &lv_font_montserrat_10, 0);
-}
-
 void FormatChronchiAppHeader(const char* source_app, char* output, size_t output_size) {
     if (output_size == 0) return;
-    std::snprintf(output, output_size, "%.8s", source_app ? source_app : "");
+    std::snprintf(output, output_size, "%.14s", source_app ? source_app : "");
 }
 
 const char* OrderStatusLabel(ChronchiOrderStatus status) {
@@ -115,13 +88,6 @@ const char* OrderStatusLabel(ChronchiOrderStatus status) {
     return "Status pesanan";
 }
 
-bool IsChronchiNotificationScreen(ChronchiScreenType type) {
-    return type == ChronchiScreenType::Message ||
-           type == ChronchiScreenType::Professional ||
-           type == ChronchiScreenType::Payment ||
-           type == ChronchiScreenType::Order ||
-           type == ChronchiScreenType::System;
-}
 }  // namespace
 
 OledDisplay::OledDisplay(esp_lcd_panel_io_handle_t panel_io, esp_lcd_panel_handle_t panel,
@@ -146,7 +112,7 @@ OledDisplay::OledDisplay(esp_lcd_panel_io_handle_t panel_io, esp_lcd_panel_handl
 
     ESP_LOGI(TAG, "Initialize LVGL");
     lvgl_port_cfg_t port_cfg = ESP_LVGL_PORT_INIT_CONFIG();
-    port_cfg.task_priority = 1;
+    port_cfg.task_priority = 3;
     port_cfg.task_stack = 6144;
 #if CONFIG_SOC_CPU_CORES_NUM > 1
     port_cfg.task_affinity = 1;
@@ -306,11 +272,22 @@ void OledDisplay::SetupChronchiOverlay() {
     lv_obj_set_style_bg_opa(chronchi_overlay_, LV_OPA_COVER, 0);
     lv_obj_set_scrollbar_mode(chronchi_overlay_, LV_SCROLLBAR_MODE_OFF);
 
+    // BLE icon — right side of header
+    chronchi_ble_icon_ = lv_label_create(chronchi_overlay_);
+    lv_obj_set_pos(chronchi_ble_icon_, kChronchiBleIconX, kChronchiHeaderY);
+    lv_obj_set_size(chronchi_ble_icon_, kChronchiBleIconWidth, kChronchiHeaderHeight);
+    lv_obj_set_style_text_font(chronchi_ble_icon_, &BUILTIN_ICON_FONT, 0);
+    lv_obj_set_style_text_color(chronchi_ble_icon_, lv_color_white(), 0);
+    lv_obj_set_style_text_align(chronchi_ble_icon_, LV_TEXT_ALIGN_RIGHT, 0);
+    lv_label_set_text(chronchi_ble_icon_, "");
+
+    // Header label — app name or idle time, wide (106px)
     chronchi_header_left_ = lv_label_create(chronchi_overlay_);
-    chronchi_header_right_ = lv_label_create(chronchi_overlay_);
-    chronchi_battery_ = lv_label_create(chronchi_overlay_);
-    ConfigureChronchiHeaderPair(chronchi_header_left_, chronchi_header_right_);
-    ConfigureChronchiBatteryLabel(chronchi_battery_);
+    ConfigureChronchiLabel(chronchi_header_left_, kChronchiHeaderLeftX, kChronchiHeaderY,
+                           kChronchiHeaderLeftWidth, kChronchiHeaderHeight,
+                           LV_TEXT_ALIGN_LEFT, LV_LABEL_LONG_DOT);
+    lv_obj_set_style_text_font(chronchi_header_left_, &lv_font_montserrat_12, 0);
+
     chronchi_primary_ = lv_label_create(chronchi_overlay_);
     ConfigureChronchiBodyLabel(chronchi_primary_, kChronchiBodyRow1Y,
                                kChronchiBodyRowHeight, LV_TEXT_ALIGN_CENTER,
@@ -334,12 +311,16 @@ void OledDisplay::SetupChronchiOverlay() {
     ResetChronchiLayout();
 }
 
-void OledDisplay::ShowModeMenu(bool chronchi_selected) {
+void OledDisplay::ShowModeMenu(int selected_mode) {
     DisplayLockGuard lock(this);
     if (mode_overlay_ == nullptr) return;
-    lv_label_set_text(mode_selection_label_, chronchi_selected
-                                               ? "  XIAOZHI\n> CHRONCHI"
-                                               : "> XIAOZHI\n  CHRONCHI");
+    // 0=Xiaozhi, 1=Chronchi
+    static const char* menus[] = {
+        "> XIAOZHI\n  CHRONCHI",
+        "  XIAOZHI\n> CHRONCHI",
+    };
+    int idx = (selected_mode >= 0 && selected_mode <= 1) ? selected_mode : 0;
+    lv_label_set_text(mode_selection_label_, menus[idx]);
     lv_label_set_text(mode_help_label_, "CLICK:NEXT  HOLD:OK");
     lv_obj_remove_flag(mode_overlay_, LV_OBJ_FLAG_HIDDEN);
     lv_obj_move_foreground(mode_overlay_);
@@ -362,16 +343,18 @@ void OledDisplay::ShowModeSwitching(const char* mode_name) {
 }
 
 void OledDisplay::ResetChronchiLayout() {
-    lv_obj_t* objects[] = {chronchi_header_left_, chronchi_header_right_, chronchi_battery_,
+    lv_obj_t* objects[] = {chronchi_ble_icon_,
+                           chronchi_header_left_,
                            chronchi_primary_, chronchi_secondary_, chronchi_footer_,
                            chronchi_icon_canvas_};
     for (lv_obj_t* object : objects) {
         if (object != nullptr) lv_obj_add_flag(object, LV_OBJ_FLAG_HIDDEN);
     }
-    // Startup/system screens temporarily center this label. Always restore the
-    // edge-aligned header before rendering the next normal Chronchi screen.
-    ConfigureChronchiHeaderPair(chronchi_header_left_, chronchi_header_right_);
-    ConfigureChronchiBatteryLabel(chronchi_battery_);
+    // Restore default header layout
+    ConfigureChronchiLabel(chronchi_header_left_, kChronchiHeaderLeftX, kChronchiHeaderY,
+                           kChronchiHeaderLeftWidth, kChronchiHeaderHeight,
+                           LV_TEXT_ALIGN_LEFT, LV_LABEL_LONG_DOT);
+    lv_obj_set_style_text_font(chronchi_header_left_, &lv_font_montserrat_12, 0);
     ConfigureChronchiBodyLabel(chronchi_primary_, kChronchiBodyRow1Y,
                                kChronchiBodyRowHeight, LV_TEXT_ALIGN_CENTER,
                                LV_LABEL_LONG_SCROLL_CIRCULAR);
@@ -380,9 +363,8 @@ void OledDisplay::ResetChronchiLayout() {
     ConfigureChronchiBodyLabel(chronchi_footer_, kChronchiBodyRow3Y,
                                kChronchiBodyRowHeight, LV_TEXT_ALIGN_CENTER,
                                LV_LABEL_LONG_SCROLL_CIRCULAR);
+    if (chronchi_ble_icon_ != nullptr) lv_label_set_text(chronchi_ble_icon_, "");
     lv_label_set_text(chronchi_header_left_, "");
-    lv_label_set_text(chronchi_header_right_, "");
-    lv_label_set_text(chronchi_battery_, "");
     lv_label_set_text(chronchi_primary_, "");
     lv_label_set_text(chronchi_secondary_, "");
     lv_label_set_text(chronchi_footer_, "");
@@ -415,45 +397,47 @@ void OledDisplay::SetChronchiScreen(const ChronchiScreen& screen) {
     ResetChronchiLayout();
 
     auto show = [](lv_obj_t* object) { lv_obj_remove_flag(object, LV_OBJ_FLAG_HIDDEN); };
-    auto set_header = [&](const char* left, const char* right) {
-        lv_label_set_text(chronchi_header_left_, left ? left : "");
-        lv_label_set_text(chronchi_header_right_, right ? right : "");
+    auto set_header = [&](const char* text) {
+        lv_label_set_text(chronchi_header_left_, text ? text : "");
         show(chronchi_header_left_);
-        show(chronchi_header_right_);
     };
 
+    // Battery display removed
     char buffer[80] = {};
-    char app_header[9] = {};
+    char app_header[15] = {};
     FormatChronchiAppHeader(screen.source_app, app_header, sizeof(app_header));
-    if (screen.battery_valid) {
-        std::snprintf(buffer, sizeof(buffer), "%u%%", static_cast<unsigned>(screen.battery));
-    } else {
-        std::snprintf(buffer, sizeof(buffer), "--%%");
-    }
-    lv_label_set_text(chronchi_battery_, buffer);
-    if (!IsChronchiNotificationScreen(screen.type)) {
-        show(chronchi_battery_);
+
+    if (chronchi_ble_icon_ != nullptr) {
+        const char* ble_icon = (screen.connection == ChronchiConnectionState::Connected)
+                                   ? FONT_AWESOME_BLUETOOTH
+                                   : "";
+        lv_label_set_text(chronchi_ble_icon_, ble_icon);
+        if (ble_icon[0] != '\0') {
+            show(chronchi_ble_icon_);
+        }
     }
 
     switch (screen.type) {
         case ChronchiScreenType::Home:
-            set_header(screen.network[0] ? screen.network : (screen.wifi ? "WIFI" : "BLE"), "");
-            lv_label_set_text(chronchi_primary_, screen.time);
-            lv_label_set_text(chronchi_secondary_, screen.date);
-            ConfigureChronchiBodyLabel(chronchi_secondary_, kChronchiBodyRow2Y,
+            // Time in header when idle
+            set_header(screen.time);
+            lv_label_set_text(chronchi_primary_, screen.date);
+            ConfigureChronchiBodyLabel(chronchi_primary_, kChronchiBodyRow1Y,
                                        kChronchiBodyRowHeight, LV_TEXT_ALIGN_CENTER,
                                        LV_LABEL_LONG_SCROLL_CIRCULAR);
             std::snprintf(buffer, sizeof(buffer), "%s %s", screen.weather, screen.location);
-            lv_label_set_text(chronchi_footer_, buffer);
+            lv_label_set_text(chronchi_secondary_, buffer);
+            ConfigureChronchiBodyLabel(chronchi_secondary_, kChronchiBodyRow2Y,
+                                       kChronchiBodyRowHeight, LV_TEXT_ALIGN_CENTER,
+                                       LV_LABEL_LONG_SCROLL_CIRCULAR);
+            lv_label_set_text(chronchi_footer_, "");
             show(chronchi_primary_);
             show(chronchi_secondary_);
-            show(chronchi_footer_);
             break;
 
         case ChronchiScreenType::Message:
-            ConfigureChronchiNotificationHeaderPair(chronchi_header_left_,
-                                                     chronchi_header_right_);
-            set_header(app_header, screen.time);
+            // App name in header (wider, 14 chars)
+            set_header(app_header);
             lv_label_set_text(chronchi_primary_, screen.primary);
             lv_label_set_text(chronchi_secondary_, screen.secondary);
             ConfigureChronchiBodyLabel(chronchi_secondary_, kChronchiBodyRow2Y, 31,
@@ -464,9 +448,7 @@ void OledDisplay::SetChronchiScreen(const ChronchiScreen& screen) {
 
         case ChronchiScreenType::Professional:
         case ChronchiScreenType::Payment:
-            ConfigureChronchiNotificationHeaderPair(chronchi_header_left_,
-                                                     chronchi_header_right_);
-            set_header(app_header, screen.time);
+            set_header(app_header);
             lv_label_set_text(chronchi_primary_, screen.primary);
             lv_label_set_text(chronchi_secondary_, screen.secondary);
             ConfigureChronchiBodyLabel(chronchi_primary_, kChronchiBodyRow1Y,
@@ -480,9 +462,7 @@ void OledDisplay::SetChronchiScreen(const ChronchiScreen& screen) {
             break;
 
         case ChronchiScreenType::Order: {
-            ConfigureChronchiNotificationHeaderPair(chronchi_header_left_,
-                                                     chronchi_header_right_);
-            set_header(app_header, screen.time);
+            set_header(app_header);
             const uint8_t* bitmap = ChronchiAssets::kPackage32x32;
             if (screen.order_status == ChronchiOrderStatus::OutForDelivery) {
                 bitmap = ChronchiAssets::kDelivery32x32;
@@ -498,19 +478,19 @@ void OledDisplay::SetChronchiScreen(const ChronchiScreen& screen) {
         }
 
         case ChronchiScreenType::Navigation: {
-            set_header("NAVIGASI", screen.time);
+            set_header("NAVIGASI");
             const uint8_t* bitmap = ChronchiAssets::kStraight32x32;
             int icon_width = 32;
             int icon_height = 32;
             switch (screen.maneuver) {
                 case ChronchiManeuver::Left:
-                    bitmap = ChronchiAssets::kLeft21x15; icon_width = 21; icon_height = 15; break;
+                    bitmap = ChronchiAssets::kLeft32x32; icon_width = 32; icon_height = 32; break;
                 case ChronchiManeuver::Right:
-                    bitmap = ChronchiAssets::kRight28x20; icon_width = 28; icon_height = 20; break;
+                    bitmap = ChronchiAssets::kRight32x32; icon_width = 32; icon_height = 32; break;
                 case ChronchiManeuver::SlightLeft:
-                    bitmap = ChronchiAssets::kSlightLeft15x24; icon_width = 15; icon_height = 24; break;
+                    bitmap = ChronchiAssets::kSlightLeft32x32; icon_width = 32; icon_height = 32; break;
                 case ChronchiManeuver::SlightRight:
-                    bitmap = ChronchiAssets::kSlightRight15x24; icon_width = 15; icon_height = 24; break;
+                    bitmap = ChronchiAssets::kSlightRight32x32; icon_width = 32; icon_height = 32; break;
                 case ChronchiManeuver::Roundabout:
                     bitmap = ChronchiAssets::kRoundabout32x32; break;
                 case ChronchiManeuver::Arrive:
@@ -541,13 +521,30 @@ void OledDisplay::SetChronchiScreen(const ChronchiScreen& screen) {
 
         case ChronchiScreenType::Startup:
         case ChronchiScreenType::Connection:
-        case ChronchiScreenType::System:
             ConfigureChronchiLabel(chronchi_header_left_, 0, 0,
-                                    screen.type == ChronchiScreenType::System
-                                        ? width_ : kChronchiBatteryX,
-                                    16,
+                                    width_, 16,
                                     LV_TEXT_ALIGN_CENTER, LV_LABEL_LONG_CLIP);
             lv_obj_set_style_text_font(chronchi_header_left_, &lv_font_montserrat_14, 0);
+            lv_label_set_text(chronchi_header_left_, screen.source_app);
+            ConfigureChronchiBodyLabel(chronchi_primary_, kChronchiBodyRow1Y,
+                                       kChronchiBodyRowHeight, LV_TEXT_ALIGN_CENTER,
+                                       LV_LABEL_LONG_SCROLL_CIRCULAR);
+            ConfigureChronchiBodyLabel(chronchi_secondary_, kChronchiBodyRow2Y,
+                                       kChronchiBodyRowHeight, LV_TEXT_ALIGN_CENTER,
+                                       LV_LABEL_LONG_SCROLL_CIRCULAR);
+            lv_label_set_text(chronchi_primary_, screen.primary);
+            lv_label_set_text(chronchi_secondary_, screen.secondary);
+            show(chronchi_header_left_);
+            show(chronchi_primary_);
+            show(chronchi_secondary_);
+            break;
+
+        case ChronchiScreenType::System:
+            ConfigureChronchiLabel(chronchi_header_left_, kChronchiHeaderLeftX, 0,
+                                    kChronchiHeaderLeftWidth,
+                                    16,
+                                    LV_TEXT_ALIGN_LEFT, LV_LABEL_LONG_CLIP);
+            lv_obj_set_style_text_font(chronchi_header_left_, &lv_font_montserrat_12, 0);
             lv_label_set_text(chronchi_header_left_, screen.source_app);
             ConfigureChronchiBodyLabel(chronchi_primary_, kChronchiBodyRow1Y,
                                        kChronchiBodyRowHeight, LV_TEXT_ALIGN_CENTER,

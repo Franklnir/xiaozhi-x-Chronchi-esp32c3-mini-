@@ -38,23 +38,8 @@ std::string ToLowerAscii(std::string text) {
 }
 
 int ParseLocalSongIndex(const std::string& lowered_text) {
-    auto has = [&lowered_text](const char* token) {
-        return lowered_text.find(token) != std::string::npos;
-    };
-
-    bool is_song_cmd = has("nyanyi") || has("nyanyiin") || has("putar lagu") ||
-                       has("puterin lagu") || has("sing") || has("play song");
-    if (!is_song_cmd) {
-        return 0;
-    }
-
-    if (has("3") || has("tiga") || has("ketiga") || has("three")) {
-        return 3;
-    }
-    if (has("2") || has("dua") || has("kedua") || has("two")) {
-        return 2;
-    }
-    return 1;
+    (void)lowered_text;
+    return 0;
 }
 
 bool IsLocalSongStopCommand(const std::string& lowered_text) {
@@ -200,6 +185,15 @@ bool IsModeSwitchCommand(const std::string& normalized_text) {
         "alihkan ke chronchi",
         "masuk mode chronchi",
         "mode chronchi",
+        "pindah ke xiaozhi",
+        "ganti ke xiaozhi",
+        "alihkan ke xiaozhi",
+        "masuk mode xiaozhi",
+        "mode xiaozhi",
+        "kembali ke xiaozhi",
+        "balik ke xiaozhi",
+        "kembali ke awal",
+        "mode normal",
     };
     for (const char* command : kModeCommands) {
         if (ContainsNormalizedPhrase(normalized_text, command)) {
@@ -543,7 +537,11 @@ void Application::HandleNetworkConnectedEvent() {
     auto state = GetDeviceState();
 
     if (state == kDeviceStateStarting || state == kDeviceStateWifiConfiguring) {
-        // Network is ready, start activation
+        // Network is ready, start activation.
+        // Handle race: WiFi connects but timeout timer already entered config mode.
+        if (state == kDeviceStateWifiConfiguring) {
+            ESP_LOGI(TAG, "WiFi connected during config mode, switching to activation");
+        }
         SetDeviceState(kDeviceStateActivating);
         if (activation_task_handle_ != nullptr) {
             ESP_LOGW(TAG, "Activation task already running");
@@ -1159,19 +1157,44 @@ bool Application::TryHandleModeSwitchCommand(const std::string& text) {
         return false;
     }
 
-    ESP_LOGW(TAG, "Voice mode-switch command detected: \"%s\"", text.c_str());
-    const esp_err_t err = ModeStore::Save(BootMode::Chronchi);
+    // Determine target mode from voice command
+    BootMode target_mode = BootMode::Chronchi;  // default "pindah mode" = Chronchi
+    const char* mode_label = "Chronchi";
+
+    if (ContainsNormalizedPhrase(normalized_text, "xiaozhi") ||
+               ContainsNormalizedPhrase(normalized_text, "awal") ||
+               ContainsNormalizedPhrase(normalized_text, "normal")) {
+        target_mode = BootMode::Xiaozhi;
+        mode_label = "Xiaozhi";
+    }
+
+    // If already in the target mode, just notify
+    if (ModeStore::Current() == target_mode) {
+        ESP_LOGI(TAG, "Already in %s mode", mode_label);
+        auto display = Board::GetInstance().GetDisplay();
+        char msg[64];
+        snprintf(msg, sizeof(msg), "Sudah di mode %s", mode_label);
+        display->ShowNotification(msg);
+        return true;
+    }
+
+    ESP_LOGW(TAG, "Voice mode-switch command detected: \"%s\" -> %s", text.c_str(), mode_label);
+    const esp_err_t err = ModeStore::Save(target_mode);
     auto display = Board::GetInstance().GetDisplay();
     if (err != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to save Chronchi mode: %s", esp_err_to_name(err));
-        display->ShowNotification("Gagal pindah ke Chronchi");
+        ESP_LOGE(TAG, "Failed to save %s mode: %s", mode_label, esp_err_to_name(err));
+        char msg[64];
+        snprintf(msg, sizeof(msg), "Gagal pindah ke %s", mode_label);
+        display->ShowNotification(msg);
         audio_service_.PlaySound(Lang::Sounds::OGG_EXCLAMATION);
         return true;
     }
 
     wifi_reset_confirmation_pending_ = false;
     wifi_reset_confirmation_deadline_us_ = 0;
-    display->ShowNotification("Pindah ke Chronchi...");
+    char msg[64];
+    snprintf(msg, sizeof(msg), "Pindah ke %s...", mode_label);
+    display->ShowNotification(msg);
     Reboot();
     return true;
 }
@@ -1245,13 +1268,16 @@ bool Application::TryHandleStandbyCommand(const std::string& text) {
 
     auto display = Board::GetInstance().GetDisplay();
     display->ShowNotification("Standby");
-    ArmWakeWordCooldown(kWakeWordCooldownAfterCloseUs);
 
+    // Close channel immediately and arm cooldown to prevent wake word
+    // from detecting server's goodbye TTS as a new trigger.
     if (protocol_ && protocol_->IsAudioChannelOpened()) {
+        protocol_->SendStopListening();
         protocol_->CloseAudioChannel();
-    } else {
-        SetDeviceState(kDeviceStateIdle);
     }
+    ArmWakeWordCooldown(kWakeWordCooldownAfterCloseUs);
+    standby_until_us_ = esp_timer_get_time() + 60LL * 1000000LL;  // Block hands-free 60s
+    SetDeviceState(kDeviceStateIdle);
     return true;
 }
 
@@ -1406,6 +1432,7 @@ void Application::HandleStopListeningEvent() {
         ArmWakeWordCooldown(kWakeWordCooldownAfterCloseUs);
         if (protocol_) {
             protocol_->SendStopListening();
+            protocol_->CloseAudioChannel();
         }
         SetDeviceState(kDeviceStateIdle);
     }
@@ -1416,8 +1443,11 @@ void Application::HandleWakeWordDetectedEvent() {
         return;
     }
 
+    // Clear standby flag — user explicitly woke the device
+    standby_until_us_ = 0;
+
     auto state = GetDeviceState();
-    
+
     if (state == kDeviceStateIdle || state == kDeviceStateConnecting) {
         auto wake_word = audio_service_.GetLastWakeWord();
         if (ShouldIgnoreWakeWord(wake_word)) {
@@ -1676,11 +1706,14 @@ void Application::WakeWordInvoke(const std::string& wake_word) {
         Schedule([this]() {
             AbortSpeaking(kAbortReasonNone);
         });
-    } else if (state == kDeviceStateListening) {   
+    } else if (state == kDeviceStateListening) {
         Schedule([this]() {
             if (protocol_) {
+                protocol_->SendStopListening();
                 protocol_->CloseAudioChannel();
             }
+            ArmWakeWordCooldown(kWakeWordCooldownAfterCloseUs);
+            SetDeviceState(kDeviceStateIdle);
         });
     }
 }

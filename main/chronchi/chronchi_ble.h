@@ -15,10 +15,14 @@
 
 class ChronchiBle {
 public:
-    explicit ChronchiBle(ChronchiState& state);
+    ChronchiBle(ChronchiState& state, const char* mode = "chronchi");
     esp_err_t Initialize();
     void Poll();
     bool ConfirmPairing();
+    void Stop();  // Deinit BLE and free resources
+
+    // Access protocol for notification callback registration
+    ChronchiProtocol& GetProtocol() { return protocol_; }
 
     static int GattAccess(uint16_t connection_handle, uint16_t attribute_handle,
                           struct ble_gatt_access_ctxt* context, void* arg);
@@ -58,6 +62,7 @@ private:
     std::atomic<int64_t> restart_at_us_{0};
     char device_name_[20] = "Chronchi";
     char device_id_[12] = "CH-0000";
+    char mode_[12] = "chronchi";
     std::array<PendingResponse, kResponseQueueSize> response_queue_ = {};
     size_t response_head_ = 0;
     size_t response_tail_ = 0;

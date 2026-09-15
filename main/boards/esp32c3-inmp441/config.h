@@ -22,16 +22,17 @@
 
 // Device battery measurement (single-cell Li-ion, 100k/100k divider).
 // BAT+ -> 100k -> GPIO1 -> 100k -> GND, with 100nF from GPIO1 to GND.
+// GPIO1 = ADC1_CH1, dedicated for battery (no other ADC user).
 #define BATTERY_ADC_GPIO                    GPIO_NUM_1
 #define BATTERY_ADC_UNIT                    ADC_UNIT_1
 #define BATTERY_ADC_CHANNEL                 ADC_CHANNEL_1
 #define BATTERY_DIVIDER_UPPER_RESISTOR_OHM  100000.0f
 #define BATTERY_DIVIDER_LOWER_RESISTOR_OHM  100000.0f
-#define BATTERY_REFRESH_INTERVAL_MS         5000
+#define BATTERY_REFRESH_INTERVAL_MS         15000
 
 // Hands-free mode: auto enter listen mode when device is idle.
 // Set to 0 to restore pure push-to-talk behavior on GPIO3.
-#define HANDS_FREE_AUTO_LISTEN              1
+#define HANDS_FREE_AUTO_LISTEN              0
 #define HANDS_FREE_AUTO_LISTEN_INTERVAL_MS  500
 #define HANDS_FREE_AUTO_LISTEN_RETRY_MS     5000
 #define HANDS_FREE_IDLE_TIMEOUT_MS          30000
@@ -40,8 +41,8 @@
 #define BUILTIN_LED_GPIO    GPIO_NUM_NC  // No built-in LED
 
 // OLED Display Configuration (SSD1306 128x64 via I2C)
-#define DISPLAY_SDA_PIN     GPIO_NUM_8   // I2C SDA
-#define DISPLAY_SCL_PIN     GPIO_NUM_9   // I2C SCL
+#define DISPLAY_SDA_PIN     GPIO_NUM_0   // I2C SDA (GPIO8 rusak, pindah ke sini)
+#define DISPLAY_SCL_PIN     GPIO_NUM_10  // I2C SCL (GPIO9 rusak, pindah ke sini)
 #define DISPLAY_WIDTH       128
 #define DISPLAY_HEIGHT      64
 #define DISPLAY_MIRROR_X    true

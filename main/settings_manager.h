@@ -84,8 +84,11 @@ public:
     std::string GetLanguage() const;
     void SetLanguage(const std::string& lang);
     
+    bool GetWifiRememberBssid() const;
+    void SetWifiRememberBssid(bool enabled);
+
     int GetWifiMaxTxPower() const;
-    void SetWifiMaxTxPower(int power);
+    void SetWifiMaxTxPower(int power_dbm);
     
     // Save all settings to NVS
     bool Save();

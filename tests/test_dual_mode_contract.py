@@ -111,7 +111,7 @@ def check_radio_and_display_contract() -> None:
         "void OledDisplay::DrawChronchiBitmap", 1
     )[0]
     assert "ConfigureChronchiHeaderPair(chronchi_header_left_, chronchi_header_right_)" in reset_layout
-    assert '"  XIAOZHI\\n> CHRONCHI"' in oled
+    assert '> CHRONCHI' in oled
     assert "LV_LABEL_LONG_SCROLL_CIRCULAR" in oled
     assert "lv_color_black()" in oled and "lv_color_white()" in oled
     for asset in ("kDelivery32x32", "kPackage32x32", "kCancelled32x32",
@@ -140,6 +140,10 @@ def check_chronchi_contract() -> None:
                   "paymentDirection", "orderStatus", "distanceText", "roadName",
                   "destinationDistanceText"):
         assert f'"{field}"' in protocol
+    for navigation_alias in ("NormalizeManeuver", "HasManeuverToken", "ParseNavigationManeuver",
+                             "TURN_LEFT", "KEEP", "ROUNDABOUT", "maneuverType", "direction",
+                             "instruction"):
+        assert navigation_alias in protocol
     assert '"Chronchi-%02X%02X"' in ble and "BuildIdentity()" in ble
     assert "7c9e0001-6f2f-4d4d-9f25-0d7fd4f0a001" in ble
     assert "BLE_GATT_CHR_F_WRITE_NO_RSP" in ble
@@ -186,7 +190,8 @@ def check_device_battery_contract() -> None:
     assert "home_.battery" not in phone_status
     assert 'lv_label_set_text(chronchi_battery_, buffer)' in oled
     assert 'std::snprintf(buffer, sizeof(buffer), "--%%")' in oled
-    assert "IsChronchiNotificationScreen(screen.type)" in oled
+    assert "const bool show_battery = screen.type == ChronchiScreenType::Home" in oled
+    assert "if (show_battery)" in oled
     assert "ConfigureChronchiNotificationHeaderPair" in oled
 
 

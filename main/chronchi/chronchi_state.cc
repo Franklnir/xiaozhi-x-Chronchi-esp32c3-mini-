@@ -107,6 +107,8 @@ void ChronchiState::StampDeviceBatteryLocked(ChronchiScreen& screen) const {
     screen.battery = device_battery_;
     screen.charging = device_charging_;
     screen.battery_valid = device_battery_valid_;
+    screen.connection = connected_ ? ChronchiConnectionState::Connected
+                                   : ChronchiConnectionState::Disconnected;
 }
 
 bool ChronchiState::ActiveExpiredLocked(int64_t now_us) const {
@@ -129,10 +131,13 @@ void ChronchiState::SetConnection(bool connected) {
     connected_ = connected;
     if (!connected) subscribed_ = false;
 
+    home_.connection = connected ? ChronchiConnectionState::Connected
+                                 : ChronchiConnectionState::Disconnected;
+    active_.connection = home_.connection;
+
     ChronchiScreen screen = {};
     screen.type = ChronchiScreenType::Connection;
-    screen.connection = connected ? ChronchiConnectionState::Connected
-                                  : ChronchiConnectionState::Reconnecting;
+    screen.connection = home_.connection;
     CopyText(screen.source_app, sizeof(screen.source_app), "BLUETOOTH");
     CopyText(screen.primary, sizeof(screen.primary), connected ? "Connected" : "Disconnected");
     CopyText(screen.secondary, sizeof(screen.secondary),

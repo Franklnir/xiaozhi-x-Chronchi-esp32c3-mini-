@@ -321,13 +321,7 @@ esp_err_t WebSettingsServer::HandleSetConfig(httpd_req_t* req) {
         
         item = cJSON_GetObjectItem(root, "remember_bssid");
         if (cJSON_IsBool(item)) {
-            // Save to NVS directly
-            nvs_handle_t handle;
-            if (nvs_open("xiaozhi", NVS_READWRITE, &handle) == ESP_OK) {
-                nvs_set_u8(handle, "bssid_en", cJSON_IsTrue(item) ? 1 : 0);
-                nvs_commit(handle);
-                nvs_close(handle);
-            }
+            settings.SetWifiRememberBssid(cJSON_IsTrue(item));
         }
         
         item = cJSON_GetObjectItem(root, "tx_power");

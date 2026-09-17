@@ -37,6 +37,7 @@ set(SOURCES "audio/audio_codec.cc"
             "assets.cc"
             "mode/mode_store.cc"
             "mode/mode_selector.cc"
+            "youtube_audio_poller.cc"
             "main.cc"
             )
 

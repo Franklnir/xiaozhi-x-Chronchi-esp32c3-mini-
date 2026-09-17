@@ -167,9 +167,10 @@ bool AudioService::ReadAudioData(std::vector<int16_t>& data, int sample_rate, in
                 data[j + 1] = resampled_reference[i];
             }
         } else {
-            auto resampled = std::vector<int16_t>(input_resampler_.GetOutputSamples(data.size()));
-            input_resampler_.Process(data.data(), data.size(), resampled.data());
-            data = std::move(resampled);
+            int out_samples = input_resampler_.GetOutputSamples(data.size());
+            input_resample_buf_.resize(out_samples);
+            input_resampler_.Process(data.data(), data.size(), input_resample_buf_.data());
+            data = input_resample_buf_;
         }
     } else {
         data.resize(samples * codec_->input_channels());
@@ -481,12 +482,21 @@ void AudioService::OpusCodecTask() {
 }
 
 void AudioService::SetDecodeSampleRate(int sample_rate, int frame_duration) {
-    if (opus_decoder_->sample_rate() == sample_rate && opus_decoder_->duration_ms() == frame_duration) {
+#if CONFIG_IDF_TARGET_ESP32C3
+    // On ESP32-C3 (no PSRAM), the Opus decoder is allocated once at boot matching codec_->output_sample_rate().
+    // Opus natively decodes any Opus stream (16k, 24k, 48k, any frame duration) directly to output_sample_rate.
+    // Reallocating the 18KB decoder at runtime causes heap exhaustion (OPUS_ALLOC_FAIL -7) while WakeNet is active.
+    if (opus_decoder_ != nullptr) {
+        return;
+    }
+#endif
+
+    if (opus_decoder_ && opus_decoder_->sample_rate() == sample_rate && opus_decoder_->duration_ms() == frame_duration) {
         return;
     }
 
-    opus_decoder_.reset();
-    opus_decoder_ = std::make_unique<OpusDecoderWrapper>(sample_rate, 1, frame_duration);
+    auto new_decoder = std::make_unique<OpusDecoderWrapper>(sample_rate, 1, frame_duration);
+    opus_decoder_ = std::move(new_decoder);
 
     auto codec = Board::GetInstance().GetAudioCodec();
     if (opus_decoder_->sample_rate() != codec->output_sample_rate()) {
@@ -532,6 +542,11 @@ bool AudioService::PushPacketToDecodeQueue(std::unique_ptr<AudioStreamPacket> pa
     return true;
 }
 
+size_t AudioService::GetDecodeQueueSize() {
+    std::lock_guard<std::mutex> lock(audio_queue_mutex_);
+    return audio_decode_queue_.size();
+}
+
 std::unique_ptr<AudioStreamPacket> AudioService::PopPacketFromSendQueue() {
     std::lock_guard<std::mutex> lock(audio_queue_mutex_);
     if (audio_send_queue_.empty()) {
@@ -553,10 +568,14 @@ void AudioService::EncodeWakeWord() {
 }
 
 const std::string& AudioService::GetLastWakeWord() const {
-    return wake_word_->GetLastDetectedWakeWord();
+    static const std::string empty;
+    return wake_word_ ? wake_word_->GetLastDetectedWakeWord() : empty;
 }
 
 std::unique_ptr<AudioStreamPacket> AudioService::PopWakeWordPacket() {
+    if (!wake_word_) {
+        return nullptr;
+    }
     auto packet = std::make_unique<AudioStreamPacket>();
     if (wake_word_->GetWakeWordOpus(packet->payload)) {
         return packet;
@@ -817,6 +836,11 @@ void AudioService::SetModelsList(srmodel_list_t* models_list) {
     } else {
         wake_word_ = nullptr;
     }
+#elif CONFIG_IDF_TARGET_ESP32C3
+    // On ESP32-C3 without PSRAM, WakeNet consumes 26KB of internal SRAM.
+    // Disabling it preserves ~48KB contiguous SRAM for TLS (MQTT/HTTPS) and Opus decoding.
+    // Push-to-talk button on GPIO 3 is used instead.
+    wake_word_ = nullptr;
 #else
     if (esp_srmodel_filter(models_list_, ESP_WN_PREFIX, NULL) != nullptr) {
         wake_word_ = std::make_unique<EspWakeWord>();

@@ -17,6 +17,7 @@
 #include "settings.h"
 #include "lvgl_theme.h"
 #include "lvgl_display.h"
+#include "youtube_audio_poller.h"
 
 #define TAG "MCP"
 
@@ -60,6 +61,20 @@ void McpServer::AddCommonTools() {
         [&board](const PropertyList& properties) -> ReturnValue {
             auto codec = board.GetAudioCodec();
             codec->SetOutputVolume(properties["volume"].value<int>());
+            return true;
+        });
+
+    AddTool("self.audio.play_youtube",
+        "Play a YouTube song stream on the device speaker. Call this tool when the user asks to play music or a YouTube song.",
+        PropertyList({
+            Property("video_id", kPropertyTypeString),
+            Property("title", kPropertyTypeString)
+        }),
+        [](const PropertyList& properties) -> ReturnValue {
+            std::string video_id = properties["video_id"].value<std::string>();
+            std::string title = properties["title"].value<std::string>();
+            ESP_LOGI(TAG, "Tool Call: self.audio.play_youtube: title=\"%s\", vid=%s", title.c_str(), video_id.c_str());
+            YouTubeAudioPoller::GetInstance().PlaySong(video_id, title);
             return true;
         });
     

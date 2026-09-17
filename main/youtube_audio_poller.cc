@@ -341,7 +341,7 @@ void YouTubeAudioPoller::StreamAudio(const std::string& video_id, const std::str
     } else if (rssi >= -75 && free_sram >= 36000) {
         current_bitrate = "12k";
     } else {
-        current_bitrate = "9k";
+        current_bitrate = "8k";
     }
     ESP_LOGI(TAG, "Adaptive Profile Selected: RSSI=%d dBm, FreeSRAM=%u B -> Bitrate=%s",
              rssi, (unsigned int)free_sram, current_bitrate.c_str());
@@ -419,7 +419,7 @@ void YouTubeAudioPoller::StreamAudio(const std::string& video_id, const std::str
                             current_bitrate = "12k";
                             need_downshift = true;
                         } else if (current_bitrate == "12k") {
-                            current_bitrate = "9k";
+                            current_bitrate = "8k";
                             need_downshift = true;
                         }
                         if (need_downshift) {
@@ -453,15 +453,15 @@ void YouTubeAudioPoller::StreamAudio(const std::string& video_id, const std::str
                     ESP_LOGW(TAG, "HTTP read error or stream closed (ret=%d, total=%zu, frames=%d)",
                              n, total_bytes_streamed, frames_pushed);
                     if (frames_pushed > 10) {
-                        if (current_bitrate != "9k") {
-                            current_bitrate = (current_bitrate == "16k") ? "12k" : "9k";
+                        if (current_bitrate != "8k") {
+                            current_bitrate = (current_bitrate == "16k") ? "12k" : "8k";
                             need_downshift = true;
                             ESP_LOGW(TAG, "Connection interrupted mid-stream! Downshifting to %s at %.2fs",
                                      current_bitrate.c_str(), frames_pushed * 0.060f);
                         } else if (downshift_retries < 2) {
                             need_downshift = true;
                             downshift_retries++;
-                            ESP_LOGW(TAG, "Connection interrupted at 9k! Reconnecting at %.2fs",
+                            ESP_LOGW(TAG, "Connection interrupted at 8k! Reconnecting at %.2fs",
                                      frames_pushed * 0.060f);
                         }
                     }

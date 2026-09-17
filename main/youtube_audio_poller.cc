@@ -17,6 +17,7 @@
 #include "system_info.h"
 #include "audio/audio_service.h"
 #include "protocols/protocol.h"
+#include "assets/lang_config.h"
 
 static const char* TAG = "YTPoller";
 static const char* kBaseUrl = "https://xiaozhiscig.biz.id";
@@ -340,8 +341,10 @@ void YouTubeAudioPoller::StreamAudio(const std::string& video_id, const std::str
         current_bitrate = "16k";
     } else if (rssi >= -75 && free_sram >= 36000) {
         current_bitrate = "12k";
-    } else {
+    } else if (rssi >= -82 && free_sram >= 28000) {
         current_bitrate = "8k";
+    } else {
+        current_bitrate = "6k";
     }
     ESP_LOGI(TAG, "Adaptive Profile Selected: RSSI=%d dBm, FreeSRAM=%u B -> Bitrate=%s",
              rssi, (unsigned int)free_sram, current_bitrate.c_str());
@@ -422,6 +425,9 @@ void YouTubeAudioPoller::StreamAudio(const std::string& video_id, const std::str
                         } else if (current_bitrate == "12k") {
                             current_bitrate = "8k";
                             need_downshift = true;
+                        } else if (current_bitrate == "8k") {
+                            current_bitrate = "6k";
+                            need_downshift = true;
                         }
                         if (need_downshift) {
                             ESP_LOGW(TAG, "Buffer starvation detected! Downshifting to %s at %.2fs to prevent stuttering",
@@ -454,15 +460,17 @@ void YouTubeAudioPoller::StreamAudio(const std::string& video_id, const std::str
                     ESP_LOGW(TAG, "HTTP read error or stream closed (ret=%d, total=%zu, frames=%d)",
                              n, total_bytes_streamed, frames_pushed);
                     if (frames_pushed > 10) {
-                        if (current_bitrate != "8k") {
-                            current_bitrate = (current_bitrate == "16k") ? "12k" : "8k";
+                        if (current_bitrate != "6k") {
+                            if (current_bitrate == "16k") current_bitrate = "12k";
+                            else if (current_bitrate == "12k") current_bitrate = "8k";
+                            else current_bitrate = "6k";
                             need_downshift = true;
                             ESP_LOGW(TAG, "Connection interrupted mid-stream! Downshifting to %s at %.2fs",
                                      current_bitrate.c_str(), frames_pushed * 0.060f);
                         } else if (downshift_retries < 2) {
                             need_downshift = true;
                             downshift_retries++;
-                            ESP_LOGW(TAG, "Connection interrupted at 8k! Reconnecting at %.2fs",
+                            ESP_LOGW(TAG, "Connection interrupted at 6k! Reconnecting at %.2fs",
                                      frames_pushed * 0.060f);
                         }
                     }
@@ -473,24 +481,29 @@ void YouTubeAudioPoller::StreamAudio(const std::string& video_id, const std::str
                     break;
                 }
 
-                total_bytes_streamed += n;
                 ogg_len += n;
+                total_bytes_streamed += n;
 
                 // Demux Ogg pages incrementally
                 while (ogg_len >= 27) {
-                    // Find OggS magic
-                    size_t oggs_pos = 0;
-                    bool found_magic = false;
-                    for (size_t i = 0; i + 4 <= ogg_len; ++i) {
-                        if (memcmp(ogg_buf.get() + i, OGGS_MAGIC, 4) == 0) {
-                            oggs_pos = i;
-                            found_magic = true;
-                            break;
-                        }
+                    if (abort_requested_.load()) {
+                        ESP_LOGI(TAG, "Audio stream aborted by user request");
+                        break;
                     }
 
-                    if (!found_magic) {
-                        if (ogg_len > 3) {
+                    // Find next OggS magic
+                    size_t oggs_pos = 0;
+                    bool found = false;
+                    while (oggs_pos + 4 <= ogg_len) {
+                        if (memcmp(ogg_buf.get() + oggs_pos, OGGS_MAGIC, 4) == 0) {
+                            found = true;
+                            break;
+                        }
+                        oggs_pos++;
+                    }
+
+                    if (!found) {
+                        if (ogg_len >= 3) {
                             memmove(ogg_buf.get(), ogg_buf.get() + ogg_len - 3, 3);
                             ogg_len = 3;
                         }
@@ -598,17 +611,25 @@ void YouTubeAudioPoller::StreamAudio(const std::string& video_id, const std::str
     ESP_LOGI(TAG, "Stream finished (total %zu bytes read, frames_pushed=%d, aborted=%d)",
              total_bytes_streamed, frames_pushed, abort_requested_.load());
 
-    Board::GetInstance().SetPowerSaveLevel(PowerSaveLevel::LOW_POWER);
-
     if (!abort_requested_.load()) {
         app.GetAudioService().WaitForPlaybackIdle(5000);
     } else {
         app.GetAudioService().ResetDecoder();
     }
 
+    // Cleanly restore device state and UI
+    app.SetDeviceState(kDeviceStateIdle);
+    app.GetAudioService().EnableWakeWordDetection(true);
+
     if (display != nullptr) {
         display->SetChatMessage("assistant", "");
+        display->SetChatMessage("system", "");
+        display->SetStatus(Lang::Strings::STANDBY);
+        display->SetEmotion("neutral");
+        display->SetFaceState(FaceState::Idle);
     }
+
+    Board::GetInstance().SetPowerSaveLevel(PowerSaveLevel::LOW_POWER);
 
     is_playing_ = false;
 }

@@ -1429,6 +1429,18 @@ void Application::HandleToggleChatEvent() {
         audio_service_.EnableAudioTesting(false);
         SetDeviceState(kDeviceStateWifiConfiguring);
         return;
+    } else if (state == kDeviceStateConnecting) {
+        // User clicked button while connecting - abort and reset to idle!
+        ESP_LOGW(TAG, "User clicked button while connecting, aborting to idle");
+        if (protocol_) {
+            protocol_->CloseAudioChannel();
+        }
+        SetDeviceState(kDeviceStateIdle);
+        auto display = Board::GetInstance().GetDisplay();
+        if (display != nullptr) {
+            display->ShowNotification("Dibatalkan");
+        }
+        return;
     }
 
     if (!protocol_) {
@@ -1440,6 +1452,12 @@ void Application::HandleToggleChatEvent() {
         if (!protocol_->IsAudioChannelOpened()) {
             SetDeviceState(kDeviceStateConnecting);
             if (!protocol_->OpenAudioChannel()) {
+                ESP_LOGE(TAG, "Failed to open audio channel, reverting to idle");
+                SetDeviceState(kDeviceStateIdle);
+                auto display = Board::GetInstance().GetDisplay();
+                if (display != nullptr) {
+                    display->ShowNotification("Koneksi gagal");
+                }
                 return;
             }
         }
@@ -1477,6 +1495,7 @@ void Application::HandleStartListeningEvent() {
         if (!protocol_->IsAudioChannelOpened()) {
             SetDeviceState(kDeviceStateConnecting);
             if (!protocol_->OpenAudioChannel()) {
+                SetDeviceState(kDeviceStateIdle);
                 return;
             }
         }
@@ -1530,6 +1549,7 @@ void Application::HandleWakeWordDetectedEvent() {
             // If we were already in "connecting", re-run open to guarantee a fresh channel.
             SetDeviceState(kDeviceStateConnecting);
             if (!protocol_->OpenAudioChannel()) {
+                SetDeviceState(kDeviceStateIdle);
                 audio_service_.EnableWakeWordDetection(true);
                 return;
             }

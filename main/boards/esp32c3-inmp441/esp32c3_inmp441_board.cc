@@ -302,6 +302,8 @@ public:
                 BootMode::Xiaozhi, GetDisplay(),
                 [this]() {
                     auto& app = Application::GetInstance();
+                    last_voice_activity_us_ = esp_timer_get_time();
+                    wait_for_wake_word_ = false;
                     if (app.GetDeviceState() == kDeviceStateStarting) {
                         EnterWifiConfigMode();
                     } else {

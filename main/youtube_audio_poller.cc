@@ -373,6 +373,7 @@ void YouTubeAudioPoller::StreamAudio(const std::string& video_id, const std::str
 
         http->SetTimeout(15000);
         http->SetHeader("User-Agent", "ESP32-XiaoZhi");
+        http->SetHeader("Device-Id", SystemInfo::GetMacAddress().c_str());
 
         ESP_LOGI(TAG, "Connecting to stream URL: %s", stream_url.c_str());
         if (!http->Open("GET", stream_url)) {

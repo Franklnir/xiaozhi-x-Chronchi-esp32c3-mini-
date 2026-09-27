@@ -1,4 +1,6 @@
 #include "youtube_audio_poller.h"
+#include <nvs.h>
+#include <nvs_flash.h>
 
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
@@ -20,10 +22,27 @@
 #include "assets/lang_config.h"
 
 static const char* TAG = "YTPoller";
-static const char* kBaseUrl = "https://xiaozhiscig.biz.id";
-// HTTP via Nginx (port 80) for streaming - avoids TLS overhead (~20KB saved)
-// Nginx handles chunked encoding properly from uvicorn
-static const char* kStreamUrl = "http://xiaozhiscig.biz.id";
+std::string YouTubeAudioPoller::GetServerDomain() {
+    nvs_handle_t nvs;
+    char buf[64] = {};
+    size_t len = sizeof(buf);
+    if (nvs_open("system", NVS_READONLY, &nvs) == ESP_OK) {
+        if (nvs_get_str(nvs, "server_domain", buf, &len) == ESP_OK && len > 0) {
+            nvs_close(nvs);
+            return std::string(buf);
+        }
+        nvs_close(nvs);
+    }
+    return "xiaozhiscig.biz.id";
+}
+
+std::string YouTubeAudioPoller::GetBaseUrl() {
+    return "https://" + GetServerDomain();
+}
+
+std::string YouTubeAudioPoller::GetStreamUrl() {
+    return "http://" + GetServerDomain();
+}
 
 YouTubeAudioPoller::YouTubeAudioPoller() {
 }
@@ -126,10 +145,13 @@ bool YouTubeAudioPoller::FetchDirect(const std::string& query, std::string& vide
         }
     }
 
-    std::string url = std::string(kBaseUrl) + "/api/audio/play_direct?q=" + encoded_q;
+    std::string mac = SystemInfo::GetMacAddress();
+    std::string url = GetBaseUrl() + "/api/audio/play_direct?q=" + encoded_q + "&mac=" + mac;
     ESP_LOGI(TAG, "FetchDirect querying URL: %s", url.c_str());
     http->SetTimeout(12000);
     http->SetHeader("User-Agent", "ESP32-XiaoZhi");
+    http->SetHeader("Device-Id", mac.c_str());
+    http->SetHeader("X-Device-Mac", mac.c_str());
 
     if (!http->Open("GET", url)) {
         ESP_LOGW(TAG, "FetchDirect failed to open: %s", url.c_str());
@@ -175,10 +197,15 @@ bool YouTubeAudioPoller::FetchCommands(int& cmd_id, std::string& video_id, std::
     }
 
     std::string mac = SystemInfo::GetMacAddress();
-    std::string url = std::string(kBaseUrl) + "/api/device/audio/commands?mac=" + mac;
+    std::string chip = CONFIG_IDF_TARGET;
+    std::string url = GetBaseUrl() + "/api/device/audio/commands?mac=" + mac + "&chip=" + chip;
 
     http->SetTimeout(10000);
     http->SetHeader("User-Agent", "ESP32-XiaoZhi");
+    http->SetHeader("Device-Id", mac.c_str());
+    http->SetHeader("X-Device-Mac", mac.c_str());
+    http->SetHeader("X-Device-Chip", chip.c_str());
+    http->SetHeader("Device-Chip", chip.c_str());
 
     if (!http->Open("GET", url)) {
         ESP_LOGW(TAG, "FetchCommands: Failed to connect to %s", url.c_str());
@@ -238,11 +265,13 @@ bool YouTubeAudioPoller::AckCommand(int cmd_id) {
     }
 
     std::string mac = SystemInfo::GetMacAddress();
-    std::string url = std::string(kBaseUrl) + "/api/device/audio/ack";
+    std::string chip = CONFIG_IDF_TARGET;
+    std::string url = GetBaseUrl() + "/api/device/audio/ack";
 
     cJSON* root = cJSON_CreateObject();
     cJSON_AddNumberToObject(root, "command_id", cmd_id);
     cJSON_AddStringToObject(root, "mac", mac.c_str());
+    cJSON_AddStringToObject(root, "chip", chip.c_str());
     char* json_str = cJSON_PrintUnformatted(root);
     std::string payload = json_str ? json_str : "";
     if (json_str) {
@@ -253,6 +282,10 @@ bool YouTubeAudioPoller::AckCommand(int cmd_id) {
     http->SetTimeout(10000);
     http->SetHeader("Content-Type", "application/json");
     http->SetHeader("User-Agent", "ESP32-XiaoZhi");
+    http->SetHeader("Device-Id", mac.c_str());
+    http->SetHeader("X-Device-Mac", mac.c_str());
+    http->SetHeader("X-Device-Chip", chip.c_str());
+    http->SetHeader("Device-Chip", chip.c_str());
     http->SetContent(std::move(payload));
 
     bool ok = http->Open("POST", url);
@@ -263,6 +296,54 @@ bool YouTubeAudioPoller::AckCommand(int cmd_id) {
     return ok;
 }
 
+bool YouTubeAudioPoller::ReportStatus(const std::string& status, const std::string& video_id) {
+    auto network = Board::GetInstance().GetNetwork();
+    if (network == nullptr) {
+        return false;
+    }
+
+    auto http = network->CreateHttp(0);
+    if (http == nullptr) {
+        return false;
+    }
+
+    std::string mac = SystemInfo::GetMacAddress();
+    std::string chip = CONFIG_IDF_TARGET;
+    std::string url = GetBaseUrl() + "/api/device/audio/status";
+
+    cJSON* root = cJSON_CreateObject();
+    cJSON_AddStringToObject(root, "status", status.c_str());
+    cJSON_AddStringToObject(root, "mac", mac.c_str());
+    cJSON_AddStringToObject(root, "chip", chip.c_str());
+    if (!video_id.empty()) {
+        cJSON_AddStringToObject(root, "video_id", video_id.c_str());
+    }
+    char* json_str = cJSON_PrintUnformatted(root);
+    std::string payload = json_str ? json_str : "";
+    if (json_str) {
+        free(json_str);
+    }
+    cJSON_Delete(root);
+
+    http->SetTimeout(6000);
+    http->SetHeader("Content-Type", "application/json");
+    http->SetHeader("User-Agent", "ESP32-XiaoZhi");
+    http->SetHeader("Device-Id", mac.c_str());
+    http->SetHeader("X-Device-Mac", mac.c_str());
+    http->SetHeader("X-Device-Chip", chip.c_str());
+    http->SetHeader("Device-Chip", chip.c_str());
+    http->SetContent(std::move(payload));
+
+    ESP_LOGI(TAG, "ReportStatus: reporting \"%s\" for video %s to %s", status.c_str(), video_id.c_str(), url.c_str());
+    bool ok = http->Open("POST", url);
+    if (ok) {
+        http->ReadAll();
+    }
+    http->Close();
+    return ok;
+}
+
+
 void YouTubeAudioPoller::StreamAudio(const std::string& video_id, const std::string& title) {
     auto& app = Application::GetInstance();
     auto display = Board::GetInstance().GetDisplay();
@@ -272,6 +353,8 @@ void YouTubeAudioPoller::StreamAudio(const std::string& video_id, const std::str
     app.ResetAborted();
 
     ESP_LOGI(TAG, "Starting YouTube stream: %s (%s)", title.c_str(), video_id.c_str());
+    ReportStatus("playing", video_id);
+    app.GetAudioService().EnableWakeWordDetection(false);
 
     // Wait for TTS speaking to finish (max 8 sec) before opening stream
     // This frees MQTT audio memory and prevents audio output conflict
@@ -288,6 +371,7 @@ void YouTubeAudioPoller::StreamAudio(const std::string& video_id, const std::str
 
     if (abort_requested_.load()) {
         is_playing_ = false;
+        app.SetDeviceState(kDeviceStateIdle);
         return;
     }
 
@@ -299,7 +383,7 @@ void YouTubeAudioPoller::StreamAudio(const std::string& video_id, const std::str
     play_requested_ = false;
     query_requested_ = false;
 
-    std::string display_title = "🎵 " + title;
+    std::string display_title = "[PLAY] " + title;
     if (display != nullptr) {
         display->SetChatMessage("assistant", display_title.c_str());
         display->ShowNotification(display_title.c_str(), 10000);
@@ -310,9 +394,7 @@ void YouTubeAudioPoller::StreamAudio(const std::string& video_id, const std::str
         if (!codec->output_enabled()) {
             codec->EnableOutput(true);
         }
-        if (codec->output_volume() < 60) {
-            codec->SetOutputVolume(70);
-        }
+        ESP_LOGI(TAG, "Audio playback using current device volume: %d%%", codec->output_volume());
     }
 
     Board::GetInstance().SetPowerSaveLevel(PowerSaveLevel::PERFORMANCE);
@@ -325,6 +407,7 @@ void YouTubeAudioPoller::StreamAudio(const std::string& video_id, const std::str
     if (network == nullptr) {
         is_playing_ = false;
         Board::GetInstance().SetPowerSaveLevel(PowerSaveLevel::LOW_POWER);
+        app.SetDeviceState(kDeviceStateIdle);
         return;
     }
 
@@ -365,18 +448,23 @@ void YouTubeAudioPoller::StreamAudio(const std::string& video_id, const std::str
 
         float start_sec = frames_pushed * 0.060f;
         char url_buf[256];
+        std::string mac = SystemInfo::GetMacAddress();
+        std::string chip = CONFIG_IDF_TARGET;
         if (start_sec > 0.5f) {
-            snprintf(url_buf, sizeof(url_buf), "%s/api/audio/stream/%s?br=%s&start=%.2f",
-                     kStreamUrl, video_id.c_str(), current_bitrate.c_str(), start_sec);
+            snprintf(url_buf, sizeof(url_buf), "%s/api/audio/stream/%s?br=%s&start=%.2f&mac=%s&chip=%s",
+                     GetStreamUrl().c_str(), video_id.c_str(), current_bitrate.c_str(), start_sec, mac.c_str(), chip.c_str());
         } else {
-            snprintf(url_buf, sizeof(url_buf), "%s/api/audio/stream/%s?br=%s",
-                     kStreamUrl, video_id.c_str(), current_bitrate.c_str());
+            snprintf(url_buf, sizeof(url_buf), "%s/api/audio/stream/%s?br=%s&mac=%s&chip=%s",
+                     GetStreamUrl().c_str(), video_id.c_str(), current_bitrate.c_str(), mac.c_str(), chip.c_str());
         }
         std::string stream_url(url_buf);
 
         http->SetTimeout(15000);
         http->SetHeader("User-Agent", "ESP32-XiaoZhi");
-        http->SetHeader("Device-Id", SystemInfo::GetMacAddress().c_str());
+        http->SetHeader("Device-Id", mac.c_str());
+        http->SetHeader("X-Device-Mac", mac.c_str());
+        http->SetHeader("X-Device-Chip", chip.c_str());
+        http->SetHeader("Device-Chip", chip.c_str());
 
         ESP_LOGI(TAG, "Connecting to stream URL: %s", stream_url.c_str());
         if (!http->Open("GET", stream_url)) {
@@ -578,7 +666,7 @@ void YouTubeAudioPoller::StreamAudio(const std::string& video_id, const std::str
 
                         // Push raw Opus frame to decoder queue (blocking with true for flow control)
                         auto packet = std::make_unique<AudioStreamPacket>();
-                        packet->sample_rate = 24000;
+                        packet->sample_rate = (sample_rate > 0) ? sample_rate : 16000;
                         packet->frame_duration = 60;
                         packet->payload.assign(pkt_ptr, pkt_ptr + pkt_len);
                         app.GetAudioService().PushPacketToDecodeQueue(std::move(packet), true);
@@ -611,7 +699,8 @@ void YouTubeAudioPoller::StreamAudio(const std::string& video_id, const std::str
     ESP_LOGI(TAG, "Stream finished (total %zu bytes read, frames_pushed=%d, aborted=%d)",
              total_bytes_streamed, frames_pushed, abort_requested_.load());
 
-    if (!abort_requested_.load()) {
+    bool was_aborted = abort_requested_.load();
+    if (!was_aborted) {
         app.GetAudioService().WaitForPlaybackIdle(5000);
     } else {
         app.GetAudioService().ResetDecoder();
@@ -631,7 +720,21 @@ void YouTubeAudioPoller::StreamAudio(const std::string& video_id, const std::str
 
     Board::GetInstance().SetPowerSaveLevel(PowerSaveLevel::LOW_POWER);
 
+    std::string end_status = was_aborted ? "stopped" : "finished";
+    ReportStatus(end_status, video_id);
+
     is_playing_ = false;
+
+    // Otomatis langsung masuk ke mode Listening jika lagu selesai secara normal (bukan di-stop manual)
+    if (!was_aborted) {
+        ESP_LOGI(TAG, "Lagu selesai diputar secara normal, otomatis masuk ke mode LISTENING...");
+        vTaskDelay(pdMS_TO_TICKS(500));
+        app.ToggleChatState();
+    } else {
+        // Jika dihentikan manual oleh user, kembalikan status ke IDLE / STANDBY
+        // dan aktifkan kembali Wake Word detection
+        app.SetDeviceState(kDeviceStateIdle);
+    }
 }
 
 void YouTubeAudioPoller::TaskLoop() {

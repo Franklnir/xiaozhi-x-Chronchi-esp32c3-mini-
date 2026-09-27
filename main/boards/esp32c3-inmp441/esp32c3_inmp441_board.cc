@@ -14,6 +14,7 @@
 
 #include "wifi_board.h"
 #include "codecs/no_audio_codec.h"
+#include "codecs/es8311_audio_codec.h"
 #include "display/display.h"
 #include "application.h"
 #include "adc_battery_monitor.h"
@@ -38,7 +39,7 @@
 class Esp32c3Inmp441Board : public WifiBoard {
 private:
     Button boot_button_;
-    Button reset_ssid_button_;
+    std::unique_ptr<Button> reset_ssid_button_;
     std::unique_ptr<ModeSelector> mode_selector_;
     esp_timer_handle_t hands_free_timer_ = nullptr;
     int64_t last_hands_free_trigger_us_ = 0;
@@ -47,6 +48,28 @@ private:
     bool wait_for_wake_word_ = false;
     bool boot_button_pressed_ = false;
     DeviceState last_observed_state_ = kDeviceStateUnknown;
+
+    bool is_es8311_detected_ = false;
+    uint8_t es8311_addr_ = AUDIO_ES8311_I2C_ADDR;
+
+    void DetectAudioCodec() {
+        i2c_master_bus_handle_t i2c_bus = GetEsp32c3SharedI2cBus();
+        if (i2c_bus != nullptr) {
+            // Probe ES8311 at address 0x18 (default), fallback to 0x19
+            if (i2c_master_probe(i2c_bus, AUDIO_ES8311_I2C_ADDR, 50) == ESP_OK) {
+                is_es8311_detected_ = true;
+                es8311_addr_ = AUDIO_ES8311_I2C_ADDR;
+            } else if (i2c_master_probe(i2c_bus, 0x19, 50) == ESP_OK) {
+                is_es8311_detected_ = true;
+                es8311_addr_ = 0x19;
+            }
+        }
+        if (is_es8311_detected_) {
+            ESP_LOGI(TAG, "Audio hardware detected: WeAct ES8311 + NS4150B (I2C addr: 0x%02x)", es8311_addr_);
+        } else {
+            ESP_LOGI(TAG, "Audio hardware detected: INMP441 + MAX98357A (NoAudioCodecDuplex)");
+        }
+    }
 
     void ShowWakeWordStandbyHint() {
         Settings audio_settings("audio", false);
@@ -125,23 +148,30 @@ private:
             mode_selector_->OnPressUp();
         });
 
-        // GPIO2 single click toggles hands-free mode.
-        reset_ssid_button_.OnClick([this]() {
-            ToggleHandsFreeMode();
-        });
+        // Only enable reset_ssid_button_ if it's not being used as PA pin
+        if (!is_es8311_detected_ || AUDIO_ES8311_PA_PIN != RESET_SSID_BUTTON_GPIO) {
+            reset_ssid_button_ = std::make_unique<Button>(RESET_SSID_BUTTON_GPIO, false, RESET_SSID_LONG_PRESS_MS);
 
-        // Hold reset button to clear saved SSID/password and reboot.
-        reset_ssid_button_.OnLongPress([this]() {
-            ESP_LOGW(TAG, "Reset SSID button long pressed");
+            // GPIO2 single click toggles hands-free mode.
+            reset_ssid_button_->OnClick([this]() {
+                ToggleHandsFreeMode();
+            });
 
-            if (!ClearStoredWifiCredentials()) {
-                GetDisplay()->ShowNotification("Failed to reset SSID");
-                return;
-            }
+            // Hold reset button to clear saved SSID/password and reboot.
+            reset_ssid_button_->OnLongPress([this]() {
+                ESP_LOGW(TAG, "Reset SSID button long pressed");
 
-            GetDisplay()->ShowNotification("SSID reset, rebooting...");
-            esp_restart();
-        });
+                if (!ClearStoredWifiCredentials()) {
+                    GetDisplay()->ShowNotification("Failed to reset SSID");
+                    return;
+                }
+
+                GetDisplay()->ShowNotification("SSID reset, rebooting...");
+                esp_restart();
+            });
+        } else {
+            ESP_LOGI(TAG, "GPIO %d is assigned to NS4150B PA_CTRL, secondary button disabled", RESET_SSID_BUTTON_GPIO);
+        }
     }
 
     void TryStartHandsFreeListening() {
@@ -284,16 +314,26 @@ private:
 
 public:
     Esp32c3Inmp441Board()
-        : boot_button_(BOOT_BUTTON_GPIO),
-          reset_ssid_button_(RESET_SSID_BUTTON_GPIO, false, RESET_SSID_LONG_PRESS_MS) {
-        ESP_LOGI(TAG, "Initializing ESP32-C3 INMP441 Board with OLED");
+        : boot_button_(BOOT_BUTTON_GPIO) {
+        DetectAudioCodec();
+
+        ESP_LOGI(TAG, "Initializing ESP32-C3 Board (%s)",
+                 is_es8311_detected_ ? "WeAct ES8311+NS4150B" : "INMP441+MAX98357A");
         ESP_LOGI(TAG, "  BCLK: GPIO %d", AUDIO_I2S_GPIO_BCLK);
         ESP_LOGI(TAG, "  WS:   GPIO %d", AUDIO_I2S_GPIO_WS);
         ESP_LOGI(TAG, "  DIN:  GPIO %d (Mic)", AUDIO_I2S_GPIO_DIN);
         ESP_LOGI(TAG, "  DOUT: GPIO %d (Speaker)", AUDIO_I2S_GPIO_DOUT);
+        if (is_es8311_detected_) {
+            ESP_LOGI(TAG, "  MCLK: GPIO %d", AUDIO_I2S_GPIO_MCLK);
+            ESP_LOGI(TAG, "  PA:   GPIO %d", AUDIO_ES8311_PA_PIN);
+        }
         ESP_LOGI(TAG, "  Button: GPIO %d", BOOT_BUTTON_GPIO);
-        ESP_LOGI(TAG, "  GPIO2 Button: GPIO %d hands-free toggle (click), reset SSID (long press: %d ms)",
-                 RESET_SSID_BUTTON_GPIO, RESET_SSID_LONG_PRESS_MS);
+        if (!is_es8311_detected_ || AUDIO_ES8311_PA_PIN != RESET_SSID_BUTTON_GPIO) {
+            ESP_LOGI(TAG, "  GPIO2 Button: GPIO %d hands-free toggle (click), reset SSID (long press: %d ms)",
+                     RESET_SSID_BUTTON_GPIO, RESET_SSID_LONG_PRESS_MS);
+        } else {
+            ESP_LOGI(TAG, "  GPIO 2: Dedicated to NS4150B PA_CTRL");
+        }
         ESP_LOGI(TAG, "  OLED: SDA=%d, SCL=%d (%dx%d)", 
                  DISPLAY_SDA_PIN, DISPLAY_SCL_PIN, DISPLAY_WIDTH, DISPLAY_HEIGHT);
 
@@ -310,12 +350,13 @@ public:
                         app.ToggleChatState();
                     }
                 },
-                []() {
-                    auto& app = Application::GetInstance();
-                    auto state = app.GetDeviceState();
-                    if (state == kDeviceStateListening || state == kDeviceStateSpeaking) {
-                        app.ToggleChatState();
+                [this]() {
+                    ESP_LOGW(TAG, "Tombol GPIO 3 ditekan lama (4 detik) -> Masuk ke mode konfigurasi WiFi");
+                    auto display = GetDisplay();
+                    if (display != nullptr) {
+                        display->ShowNotification("Mode Konfigurasi WiFi...", 3000);
                     }
+                    EnterWifiConfigMode();
                 });
             InitializeButtons();
             InitializeHandsFreeMode();
@@ -336,17 +377,39 @@ public:
     }
 
     virtual AudioCodec* GetAudioCodec() override {
-        // NoAudioCodecDuplex for INMP441 mic + MAX98357A speaker
-        // Uses same I2S bus with shared BCLK/WS
-        static NoAudioCodecDuplex audio_codec(
-            AUDIO_INPUT_SAMPLE_RATE, 
-            AUDIO_OUTPUT_SAMPLE_RATE,
-            AUDIO_I2S_GPIO_BCLK, 
-            AUDIO_I2S_GPIO_WS, 
-            AUDIO_I2S_GPIO_DOUT, 
-            AUDIO_I2S_GPIO_DIN
-        );
-        return &audio_codec;
+        static AudioCodec* audio_codec = nullptr;
+        if (audio_codec != nullptr) {
+            return audio_codec;
+        }
+
+        if (is_es8311_detected_) {
+            i2c_master_bus_handle_t i2c_bus = GetEsp32c3SharedI2cBus();
+            audio_codec = new Es8311AudioCodec(
+                i2c_bus,
+                I2C_NUM_0,
+                AUDIO_INPUT_SAMPLE_RATE,
+                AUDIO_OUTPUT_SAMPLE_RATE,
+                AUDIO_I2S_GPIO_MCLK,
+                AUDIO_I2S_GPIO_BCLK,
+                AUDIO_I2S_GPIO_WS,
+                AUDIO_I2S_GPIO_DOUT,
+                AUDIO_I2S_GPIO_DIN,
+                AUDIO_ES8311_PA_PIN,
+                es8311_addr_,
+                true,   // use_mclk
+                false   // pa_inverted
+            );
+        } else {
+            audio_codec = new NoAudioCodecDuplex(
+                AUDIO_INPUT_SAMPLE_RATE,
+                AUDIO_OUTPUT_SAMPLE_RATE,
+                AUDIO_I2S_GPIO_BCLK,
+                AUDIO_I2S_GPIO_WS,
+                AUDIO_I2S_GPIO_DOUT,
+                AUDIO_I2S_GPIO_DIN
+            );
+        }
+        return audio_codec;
     }
 
     virtual Display* GetDisplay() override {

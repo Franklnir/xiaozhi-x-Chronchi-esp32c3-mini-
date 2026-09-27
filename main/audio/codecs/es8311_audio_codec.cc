@@ -1,6 +1,8 @@
 #include "es8311_audio_codec.h"
 
 #include <esp_log.h>
+#include <freertos/FreeRTOS.h>
+#include <freertos/task.h>
 
 #define TAG "Es8311AudioCodec"
 
@@ -15,6 +17,13 @@ Es8311AudioCodec::Es8311AudioCodec(void* i2c_master_handle, i2c_port_t i2c_port,
     pa_pin_ = pa_pin;
     pa_inverted_ = pa_inverted;
     input_gain_ = 30;
+
+    // Initialize PA pin immediately to mute state so there is no pop noise on startup
+    if (pa_pin_ != GPIO_NUM_NC) {
+        gpio_reset_pin(pa_pin_);
+        gpio_set_direction(pa_pin_, GPIO_MODE_OUTPUT);
+        gpio_set_level(pa_pin_, pa_inverted_ ? 1 : 0);
+    }
 
     assert(input_sample_rate_ == output_sample_rate_);
     CreateDuplexChannels(mclk, bclk, ws, dout, din);
@@ -68,6 +77,11 @@ Es8311AudioCodec::~Es8311AudioCodec() {
 }
 
 void Es8311AudioCodec::UpdateDeviceState() {
+    if (!output_enabled_ && pa_pin_ != GPIO_NUM_NC) {
+        // Mute amplifier BEFORE closing codec dev to prevent shutdown pop/click
+        gpio_set_level(pa_pin_, pa_inverted_ ? 1 : 0);
+    }
+
     if ((input_enabled_ || output_enabled_) && dev_ == nullptr) {
         esp_codec_dev_cfg_t dev_cfg = {
             .dev_type = ESP_CODEC_DEV_TYPE_IN_OUT,
@@ -91,9 +105,11 @@ void Es8311AudioCodec::UpdateDeviceState() {
         esp_codec_dev_close(dev_);
         dev_ = nullptr;
     }
-    if (pa_pin_ != GPIO_NUM_NC) {
-        int level = output_enabled_ ? 1 : 0;
-        gpio_set_level(pa_pin_, pa_inverted_ ? !level : level);
+
+    if (output_enabled_ && pa_pin_ != GPIO_NUM_NC) {
+        // Unmute amplifier AFTER codec dev is opened and clock is stabilized
+        vTaskDelay(pdMS_TO_TICKS(20));
+        gpio_set_level(pa_pin_, pa_inverted_ ? 0 : 1);
     }
 }
 
@@ -154,8 +170,10 @@ void Es8311AudioCodec::CreateDuplexChannels(gpio_num_t mclk, gpio_num_t bclk, gp
 }
 
 void Es8311AudioCodec::SetOutputVolume(int volume) {
-    ESP_ERROR_CHECK(esp_codec_dev_set_out_vol(dev_, volume));
     AudioCodec::SetOutputVolume(volume);
+    if (dev_ != nullptr) {
+        ESP_ERROR_CHECK(esp_codec_dev_set_out_vol(dev_, output_volume_));
+    }
 }
 
 void Es8311AudioCodec::EnableInput(bool enable) {
@@ -183,14 +201,14 @@ void Es8311AudioCodec::EnableOutput(bool enable) {
 }
 
 int Es8311AudioCodec::Read(int16_t* dest, int samples) {
-    if (input_enabled_) {
+    if (input_enabled_ && dev_ != nullptr) {
         ESP_ERROR_CHECK_WITHOUT_ABORT(esp_codec_dev_read(dev_, (void*)dest, samples * sizeof(int16_t)));
     }
     return samples;
 }
 
 int Es8311AudioCodec::Write(const int16_t* data, int samples) {
-    if (output_enabled_) {
+    if (output_enabled_ && dev_ != nullptr) {
         ESP_ERROR_CHECK_WITHOUT_ABORT(esp_codec_dev_write(dev_, (void*)data, samples * sizeof(int16_t)));
     }
     return samples;

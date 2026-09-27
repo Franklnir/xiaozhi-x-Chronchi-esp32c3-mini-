@@ -1,27 +1,53 @@
-# ESP32-C3 with INMP441 + MAX98357A + OLED
+# ESP32-C3 with Audio Auto-Detection (WeAct ES8311+NS4150B or INMP441+MAX98357A) + OLED
 
-A XiaoZhi AI board for ESP32-C3 using:
-- **Microphone**: INMP441 (I2S)
-- **Speaker**: MAX98357A (I2S)
+A XiaoZhi AI board definition for ESP32-C3 that **automatically detects** your connected audio hardware:
+- **Option 1**: WeAct Studio ES8311 Codec + NS4150B Class-D Amp (Mono I2S + I2C)
+- **Option 2**: INMP441 MEMS Microphone + MAX98357A Class-D Amp (Dual I2S Duplex)
 - **Display**: SSD1306 OLED 128x64 (I2C)
-- **Buttons**: GPIO3 chat/dual-mode selector, GPIO2 legacy hands-free toggle/reset
+- **Buttons**: GPIO3 chat/dual-mode selector, GPIO2 legacy hands-free toggle/reset (or NS4150B PA_CTRL)
 
-## Wiring
+## Audio Hardware Auto-Detection
+
+Upon startup, the firmware probes I2C address `0x18` (ES8311):
+- If **ES8311 responds (ACK)**: Initializes `Es8311AudioCodec` with MCLK on GPIO 1 and PA control on GPIO 2 (active anti-pop sequencing).
+- If **No response (NACK/timeout)**: Automatically falls back to `NoAudioCodecDuplex` for INMP441 + MAX98357A.
+
+---
+
+## Wiring Tables
+
+### Option A: WeAct Studio ES8311 + NS4150B
+
+| ESP32-C3 Pin | WeAct ES8311 Pin | Function |
+|--------------|------------------|----------|
+| **GPIO 1**   | MCK (MCLK)       | Master Clock |
+| **GPIO 5**   | BCK (BCLK)       | Bit Clock |
+| **GPIO 6**   | WS (LRCK)        | Word Select |
+| **GPIO 4**   | DO (ASDOUT)      | Mic Data to ESP32 |
+| **GPIO 7**   | DI (DSDIN)       | Audio Data from ESP32 |
+| **GPIO 0**   | SDA              | I2C Data (shared with OLED) |
+| **GPIO 10**  | SCL              | I2C Clock (shared with OLED) |
+| **GPIO 2**   | PA / CTRL        | Power Amp Enable (Anti-pop, silent idle) |
+| **5V**       | 5V / VCC         | Power (recommended 5V for NS4150B) |
+| **GND**      | GND              | Ground |
+
+> *Tip: If you want to keep GPIO 2 as a button, you can tie the WeAct PA pin to 3.3V/VCC and set `AUDIO_ES8311_PA_PIN` to `GPIO_NUM_NC` in `config.h`.*
+
+### Option B: INMP441 + MAX98357A (Discrete Modules)
 
 | ESP32-C3 Pin | Device | Function |
 |--------------|--------|----------|
-| GPIO 5 | INMP441 + MAX98357A | BCLK (shared) |
-| GPIO 6 | INMP441 + MAX98357A | WS/LRC (shared) |
-| GPIO 4 | INMP441 | SD (Mic Data) |
-| GPIO 7 | MAX98357A | DIN (Speaker Data) |
-| GPIO 3 | Button | Short-click chat/page; hold 2.5s for dual-mode menu |
-| GPIO 2 | Button (optional) | Hands-free toggle (click), Reset SSID (hold 5s) |
-| GPIO 8 | SSD1306 OLED | SDA |
-| GPIO 9 | SSD1306 OLED | SCL |
-| GPIO 1 | Li-ion battery divider | ADC1_CH1 battery sense |
-| 5V | MAX98357A | VIN |
-| 3V3 | INMP441, SSD1306 | VDD |
-| GND | All | GND |
+| **GPIO 5**   | INMP441 + MAX98357A | BCLK (shared) |
+| **GPIO 6**   | INMP441 + MAX98357A | WS/LRC (shared) |
+| **GPIO 4**   | INMP441 | SD (Mic Data) |
+| **GPIO 7**   | MAX98357A | DIN (Speaker Data) |
+| **GPIO 3**   | Button | Short-click chat/page; hold 2.5s for dual-mode menu |
+| **GPIO 2**   | Button (optional) | Hands-free toggle (click), Reset SSID (hold 5s) |
+| **GPIO 0**   | SSD1306 OLED | SDA |
+| **GPIO 10**  | SSD1306 OLED | SCL |
+| **5V**       | MAX98357A | VIN |
+| **3V3**      | INMP441, SSD1306 | VDD |
+| **GND**      | All | GND (INMP441 L/R to GND) |
 
 ### Battery percentage wiring
 

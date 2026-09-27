@@ -837,9 +837,6 @@ void AudioService::SetModelsList(srmodel_list_t* models_list) {
         wake_word_ = nullptr;
     }
 #elif CONFIG_IDF_TARGET_ESP32C3
-    // On ESP32-C3 without PSRAM, WakeNet consumes 26KB of internal SRAM.
-    // Disabling it preserves ~48KB contiguous SRAM for TLS (MQTT/HTTPS) and Opus decoding.
-    // Push-to-talk button on GPIO 3 is used instead.
     wake_word_ = nullptr;
 #else
     if (esp_srmodel_filter(models_list_, ESP_WN_PREFIX, NULL) != nullptr) {

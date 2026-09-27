@@ -24,6 +24,9 @@ struct DeviceSettings {
     // Wake word settings
     std::string wake_word;
     
+    // Server domain / host
+    std::string server_domain;
+    
     // Display settings
     std::string oled_mode;  // "classic" or "amoled"
     
@@ -63,6 +66,9 @@ public:
     std::string GetBssid(const std::string& ssid);
     
     // Settings getters/setters
+    std::string GetServerDomain() const;
+    void SetServerDomain(const std::string& domain);
+    
     std::string GetWakeWord() const;
     void SetWakeWord(const std::string& wake_word);
     

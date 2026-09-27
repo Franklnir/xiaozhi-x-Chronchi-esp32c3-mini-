@@ -50,30 +50,41 @@ bool ProbeSsd1306(i2c_master_bus_handle_t i2c_bus, uint8_t address,
 }
 }  // namespace
 
+static i2c_master_bus_handle_t g_shared_i2c_bus = nullptr;
+
+i2c_master_bus_handle_t GetEsp32c3SharedI2cBus() {
+    if (g_shared_i2c_bus != nullptr) {
+        return g_shared_i2c_bus;
+    }
+
+    // Give connected I2C devices time after power-on
+    vTaskDelay(pdMS_TO_TICKS(100));
+    i2c_master_bus_config_t bus_config = {};
+    bus_config.i2c_port = I2C_NUM_0;
+    bus_config.sda_io_num = DISPLAY_SDA_PIN;
+    bus_config.scl_io_num = DISPLAY_SCL_PIN;
+    bus_config.clk_source = I2C_CLK_SRC_DEFAULT;
+    bus_config.glitch_ignore_cnt = 7;
+    bus_config.flags.enable_internal_pullup = true;
+    esp_err_t err = i2c_new_master_bus(&bus_config, &g_shared_i2c_bus);
+    if (err != ESP_OK) {
+        ESP_LOGE(kTag, "I2C init failed: %s", esp_err_to_name(err));
+        return nullptr;
+    }
+    return g_shared_i2c_bus;
+}
+
 Display* GetEsp32c3SharedOled(bool chronchi_mode) {
     static Display* display = nullptr;
-    static i2c_master_bus_handle_t i2c_bus = nullptr;
     static NoDisplay no_display;
     if (display != nullptr) {
         return display;
     }
 
-    // Create I2C bus only once (reuse on retries)
+    // Get or create shared I2C bus
+    i2c_master_bus_handle_t i2c_bus = GetEsp32c3SharedI2cBus();
     if (i2c_bus == nullptr) {
-        // SSD1306 needs time after power-on; some modules need up to 500ms
-        vTaskDelay(pdMS_TO_TICKS(500));
-        i2c_master_bus_config_t bus_config = {};
-        bus_config.i2c_port = I2C_NUM_0;
-        bus_config.sda_io_num = DISPLAY_SDA_PIN;
-        bus_config.scl_io_num = DISPLAY_SCL_PIN;
-        bus_config.clk_source = I2C_CLK_SRC_DEFAULT;
-        bus_config.glitch_ignore_cnt = 7;
-        bus_config.flags.enable_internal_pullup = true;
-        esp_err_t err = i2c_new_master_bus(&bus_config, &i2c_bus);
-        if (err != ESP_OK) {
-            ESP_LOGE(kTag, "I2C init failed: %s", esp_err_to_name(err));
-            return &no_display;
-        }
+        return &no_display;
     }
 
     bool animated_mode = false;

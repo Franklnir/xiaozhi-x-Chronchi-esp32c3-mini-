@@ -48,10 +48,9 @@ bool EspWakeWord::Initialize(AudioCodec* codec, srmodel_list_t* models_list) {
     // Pilihan wake word dapat dikonfigurasi via NVS ("audio"/"wake_word")
     Settings audio_settings("audio", false);
     std::string preferred = audio_settings.GetString("wake_word", "hijason");
-    if (preferred != "hijason" && preferred != "hilexin" &&
-        preferred != "hiesp" && preferred != "nihaoxiaozhi") {
-        ESP_LOGW(TAG, "Invalid wake-word setting '%s'; falling back to hijason",
-                 preferred.c_str());
+    if (preferred.empty() || preferred == "hilexin" ||
+        (preferred != "hijason" && preferred != "hiesp" && preferred != "nihaoxiaozhi")) {
+        ESP_LOGI(TAG, "Selecting 'hijason' (Hi Json) as active wake word");
         preferred = "hijason";
     }
 
@@ -89,7 +88,7 @@ bool EspWakeWord::Initialize(AudioCodec* codec, srmodel_list_t* models_list) {
     ESP_LOGI(TAG, "Creating WakeNet (free=%u, largest=%u)",
              static_cast<unsigned>(heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT)),
              static_cast<unsigned>(heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT)));
-    wakenet_data_ = wakenet_iface_->create(model_name, DET_MODE_95);
+    wakenet_data_ = wakenet_iface_->create(model_name, DET_MODE_90);
     if (wakenet_data_ == nullptr) {
         ESP_LOGE(TAG, "Failed to create WakeNet model: %s", model_name);
         return false;
@@ -135,6 +134,7 @@ void EspWakeWord::Feed(const std::vector<int16_t>& data) {
     int res = wakenet_iface_->detect(wakenet_data_, (int16_t *)data.data());
     if (res > 0) {
         last_detected_wake_word_ = wakenet_iface_->get_word_name(wakenet_data_, res);
+        ESP_LOGI(TAG, ">>> Wake word triggered: %s (id=%d) <<<", last_detected_wake_word_.c_str(), res);
         running_ = false;
 
         if (wake_word_detected_callback_) {

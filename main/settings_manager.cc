@@ -15,7 +15,8 @@ SettingsManager::SettingsManager() {
     settings_.sleep_mode_enabled = false;
     settings_.sleep_timeout_sec = 60;
     settings_.volume = 50;
-    settings_.wake_word = "hilexin";
+    settings_.wake_word = "hijason";
+    settings_.server_domain = "xiaozhiscig.biz.id";
     settings_.oled_mode = "classic";
     settings_.ota_url = "https://api.tenclass.net/xiaozhi/ota/";
     settings_.language = "id_ID";
@@ -70,7 +71,25 @@ bool SettingsManager::LoadFromNvs() {
             destination.assign(buffer.c_str());
         }
     };
+    load_string("server_domain", settings_.server_domain);
+    if (settings_.server_domain.empty()) {
+        nvs_handle_t sys_nvs;
+        if (nvs_open("system", NVS_READONLY, &sys_nvs) == ESP_OK) {
+            char buf[64] = {};
+            size_t len = sizeof(buf);
+            if (nvs_get_str(sys_nvs, "server_domain", buf, &len) == ESP_OK && len > 0) {
+                settings_.server_domain = buf;
+            }
+            nvs_close(sys_nvs);
+        }
+    }
+    if (settings_.server_domain.empty()) {
+        settings_.server_domain = "xiaozhiscig.biz.id";
+    }
     load_string("wake_word", settings_.wake_word);
+    if (settings_.wake_word.empty() || settings_.wake_word == "hilexin") {
+        settings_.wake_word = "hijason";
+    }
     load_string("oled_mode", settings_.oled_mode);
     load_string("ota_url", settings_.ota_url);
     load_string("language", settings_.language);
@@ -127,7 +146,14 @@ bool SettingsManager::Save() {
     
     esp_err_t err;
     
-    err = nvs_set_str(nvs_handle_, "wake_word", settings_.wake_word.c_str());
+    err = nvs_set_str(nvs_handle_, "server_domain", settings_.server_domain.c_str());
+    nvs_handle_t sys_nvs;
+    if (nvs_open("system", NVS_READWRITE, &sys_nvs) == ESP_OK) {
+        nvs_set_str(sys_nvs, "server_domain", settings_.server_domain.c_str());
+        nvs_commit(sys_nvs);
+        nvs_close(sys_nvs);
+    }
+    nvs_set_str(nvs_handle_, "wake_word", settings_.wake_word.c_str());
     err |= nvs_set_str(nvs_handle_, "oled_mode", settings_.oled_mode.c_str());
     err |= nvs_set_str(nvs_handle_, "ota_url", settings_.ota_url.c_str());
     err |= nvs_set_str(nvs_handle_, "language", settings_.language.c_str());
@@ -324,6 +350,14 @@ std::string SettingsManager::GetBssid(const std::string& ssid) {
 }
 
 // Getters and setters
+std::string SettingsManager::GetServerDomain() const {
+    return settings_.server_domain.empty() ? "xiaozhiscig.biz.id" : settings_.server_domain;
+}
+void SettingsManager::SetServerDomain(const std::string& domain) {
+    settings_.server_domain = domain.empty() ? "xiaozhiscig.biz.id" : domain;
+    Save();
+}
+
 std::string SettingsManager::GetWakeWord() const { return settings_.wake_word; }
 void SettingsManager::SetWakeWord(const std::string& wake_word) {
     settings_.wake_word = wake_word;
@@ -392,7 +426,8 @@ void SettingsManager::SetWifiMaxTxPower(int power_dbm) {
 }
 
 bool SettingsManager::ResetToDefaults() {
-    settings_.wake_word = "hilexin";
+    settings_.wake_word = "hijason";
+    settings_.server_domain = "xiaozhiscig.biz.id";
     settings_.oled_mode = "classic";
     settings_.ota_url = "https://api.tenclass.net/xiaozhi/ota/";
     settings_.language = "id_ID";
@@ -410,6 +445,7 @@ bool SettingsManager::ResetToDefaults() {
 std::string SettingsManager::ExportToJson() const {
     cJSON* root = cJSON_CreateObject();
     
+    cJSON_AddStringToObject(root, "server_domain", settings_.server_domain.c_str());
     cJSON_AddStringToObject(root, "wake_word", settings_.wake_word.c_str());
     cJSON_AddStringToObject(root, "oled_mode", settings_.oled_mode.c_str());
     cJSON_AddStringToObject(root, "ota_url", settings_.ota_url.c_str());
@@ -444,6 +480,10 @@ bool SettingsManager::ImportFromJson(const std::string& json) {
     
     cJSON* item;
     
+    item = cJSON_GetObjectItem(root, "server_domain");
+    if (cJSON_IsString(item) && item->valuestring && item->valuestring[0] != '\0') {
+        settings_.server_domain = item->valuestring;
+    }
     item = cJSON_GetObjectItem(root, "wake_word");
     if (cJSON_IsString(item)) settings_.wake_word = item->valuestring;
     

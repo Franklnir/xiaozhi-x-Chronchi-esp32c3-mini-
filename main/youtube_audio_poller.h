@@ -11,6 +11,9 @@ public:
     static YouTubeAudioPoller& GetInstance();
 
     void Start();
+    static std::string GetServerDomain();
+    static std::string GetBaseUrl();
+    static std::string GetStreamUrl();
     void Stop();
     bool IsPlaying() const { return is_playing_.load(); }
     void Abort();
@@ -26,6 +29,7 @@ private:
     bool FetchDirect(const std::string& query, std::string& video_id, std::string& title);
     bool FetchCommands(int& cmd_id, std::string& video_id, std::string& title);
     bool AckCommand(int cmd_id);
+    bool ReportStatus(const std::string& status, const std::string& video_id = "");
     void StreamAudio(const std::string& video_id, const std::string& title);
 
     TaskHandle_t task_handle_ = nullptr;

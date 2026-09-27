@@ -53,13 +53,8 @@ input[type="checkbox"]{width:auto;margin-right:8px}
 
 <div class="card">
 <h2>⚙️ Basic Settings</h2>
-<label>Wake Word</label>
-<select id="wake_word">
-<option value="hiesp">Hi ESP</option>
-<option value="hijason">Hi Jason</option>
-<option value="hilexin">Hi Lexin</option>
-<option value="nihaoxiaozhi">Ni Hao Xiaozhi</option>
-</select>
+<label>Server Domain / Host</label>
+<input type="text" id="server_domain" placeholder="xiaozhiscig.biz.id">
 
 <label>OLED Mode</label>
 <select id="oled_mode">
@@ -113,7 +108,7 @@ async function loadSettings(){
 try{
 const r=await fetch(API+'/config');
 settings=await r.json();
-document.getElementById('wake_word').value=settings.wake_word||'hilexin';
+document.getElementById('server_domain').value=settings.server_domain||'xiaozhiscig.biz.id';
 document.getElementById('oled_mode').value=settings.oled_mode||'classic';
 document.getElementById('language').value=settings.language||'id_ID';
 document.getElementById('volume').value=settings.volume||50;
@@ -166,7 +161,7 @@ loadSettings();
 async function saveSettings(){
 const data={
 action:'save',
-wake_word:document.getElementById('wake_word').value,
+server_domain:(document.getElementById('server_domain').value.trim()||'xiaozhiscig.biz.id'),
 oled_mode:document.getElementById('oled_mode').value,
 language:document.getElementById('language').value,
 volume:parseInt(document.getElementById('volume').value),
@@ -298,8 +293,10 @@ esp_err_t WebSettingsServer::HandleSetConfig(httpd_req_t* req) {
     if (cJSON_IsString(action) && strcmp(action->valuestring, "save") == 0) {
         cJSON* item;
         
-        item = cJSON_GetObjectItem(root, "wake_word");
-        if (cJSON_IsString(item)) settings.SetWakeWord(item->valuestring);
+        item = cJSON_GetObjectItem(root, "server_domain");
+        if (cJSON_IsString(item) && item->valuestring && item->valuestring[0] != '\0') {
+            settings.SetServerDomain(item->valuestring);
+        }
         
         item = cJSON_GetObjectItem(root, "oled_mode");
         if (cJSON_IsString(item)) settings.SetOledMode(item->valuestring);

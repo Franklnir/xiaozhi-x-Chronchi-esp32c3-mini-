@@ -14,7 +14,7 @@ class ModeSelector {
 public:
     static constexpr int kShortClickMs = 700;
     static constexpr int kDoubleClickWindowMs = 400;
-    static constexpr int kEnterMenuMs = 2500;
+    static constexpr int kEnterMenuMs = 4000; // Diubah menjadi 4 detik
     static constexpr int kConfirmMs = 2000;
     static constexpr int kMenuTimeoutMs = 10000;
 
@@ -38,6 +38,7 @@ private:
     Display* display_;
     std::function<void()> short_click_;
     std::function<void()> before_menu_;
+    bool long_press_fired_ = false;
     esp_timer_handle_t timer_ = nullptr;
     esp_timer_handle_t restart_timer_ = nullptr;
 

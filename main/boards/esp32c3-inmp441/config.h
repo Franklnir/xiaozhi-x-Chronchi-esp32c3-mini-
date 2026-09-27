@@ -10,25 +10,23 @@
 
 // I2S Configuration - Duplex mode with shared clocks
 // ESP32-C3 has only ONE I2S peripheral, mic and speaker share BCLK/WS
+#define AUDIO_I2S_GPIO_MCLK GPIO_NUM_1   // Master Clock (MCLK) for ES8311 (replaces unused battery ADC)
 #define AUDIO_I2S_GPIO_WS   GPIO_NUM_6   // Word Select (shared)
 #define AUDIO_I2S_GPIO_BCLK GPIO_NUM_5   // Bit Clock (shared)
-#define AUDIO_I2S_GPIO_DIN  GPIO_NUM_4   // INMP441 SD (Mic Data In)
-#define AUDIO_I2S_GPIO_DOUT GPIO_NUM_7   // MAX98357A DIN (Speaker Data Out)
+#define AUDIO_I2S_GPIO_DIN  GPIO_NUM_4   // INMP441 SD / WeAct DO (Mic Data In)
+#define AUDIO_I2S_GPIO_DOUT GPIO_NUM_7   // MAX98357A DIN / WeAct DI (Speaker Data Out)
+
+// WeAct ES8311 + NS4150B Configuration
+#define AUDIO_ES8311_I2C_ADDR 0x18       // Default 7-bit I2C address of ES8311
+#define AUDIO_ES8311_PA_PIN   GPIO_NUM_2 // NS4150B PA Enable (set GPIO_NUM_NC if hardwired to 3.3V)
 
 // Button Configuration
 #define BOOT_BUTTON_GPIO    GPIO_NUM_3   // Short click: chat; hold 2.5s: boot-mode menu
-#define RESET_SSID_BUTTON_GPIO GPIO_NUM_2 // Click: hands-free toggle, hold: clear saved WiFi SSID
+#define RESET_SSID_BUTTON_GPIO GPIO_NUM_2 // Click: hands-free toggle, hold: clear saved WiFi SSID (disabled if GPIO2 used for PA)
 #define RESET_SSID_LONG_PRESS_MS 5000     // Long press duration in milliseconds
 
-// Device battery measurement (single-cell Li-ion, 100k/100k divider).
-// BAT+ -> 100k -> GPIO1 -> 100k -> GND, with 100nF from GPIO1 to GND.
-// GPIO1 = ADC1_CH1, dedicated for battery (no other ADC user).
-#define BATTERY_ADC_GPIO                    GPIO_NUM_1
-#define BATTERY_ADC_UNIT                    ADC_UNIT_1
-#define BATTERY_ADC_CHANNEL                 ADC_CHANNEL_1
-#define BATTERY_DIVIDER_UPPER_RESISTOR_OHM  100000.0f
-#define BATTERY_DIVIDER_LOWER_RESISTOR_OHM  100000.0f
-#define BATTERY_REFRESH_INTERVAL_MS         15000
+// Device battery measurement (disabled in this build; GPIO1 is dedicated to ES8311 MCLK).
+// #define BATTERY_ADC_GPIO                 GPIO_NUM_1
 
 // Hands-free mode: auto enter listen mode when device is idle.
 // Set to 0 to restore pure push-to-talk behavior on GPIO3.

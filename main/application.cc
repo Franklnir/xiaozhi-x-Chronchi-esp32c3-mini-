@@ -600,6 +600,7 @@ void Application::HandleActivationDoneEvent() {
     if (!audio_service_.WaitForPlaybackIdle(5000)) {
         ESP_LOGW(TAG, "Timed out waiting for activation sound playback to drain");
     }
+
     SetDeviceState(kDeviceStateIdle);
 
     auto& board = Board::GetInstance();
@@ -1533,6 +1534,11 @@ void Application::HandleWakeWordDetectedEvent() {
         return;
     }
 
+    if (YouTubeAudioPoller::GetInstance().IsPlaying()) {
+        ESP_LOGW(TAG, "Wake word ignored: YouTube audio is currently playing");
+        return;
+    }
+
     // Clear standby flag — user explicitly woke the device
     standby_until_us_ = 0;
 
@@ -1611,7 +1617,11 @@ void Application::HandleStateChangedEvent() {
             display->SetEmotion("neutral");
             display->SetFaceState(FaceState::Idle);
             audio_service_.EnableVoiceProcessing(false);
-            audio_service_.EnableWakeWordDetection(true);
+            if (!YouTubeAudioPoller::GetInstance().IsPlaying()) {
+                audio_service_.EnableWakeWordDetection(true);
+            } else {
+                audio_service_.EnableWakeWordDetection(false);
+            }
             break;
         case kDeviceStateConnecting:
             board.SetPowerSaveLevel(PowerSaveLevel::PERFORMANCE);
@@ -1764,6 +1774,11 @@ bool Application::UpgradeFirmware(const std::string& url, const std::string& ver
 
 void Application::WakeWordInvoke(const std::string& wake_word) {
     if (!protocol_) {
+        return;
+    }
+
+    if (YouTubeAudioPoller::GetInstance().IsPlaying()) {
+        ESP_LOGW(TAG, "Wake word invoke ignored: YouTube audio is currently playing");
         return;
     }
 

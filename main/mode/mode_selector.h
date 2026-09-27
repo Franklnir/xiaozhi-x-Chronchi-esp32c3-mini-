@@ -14,7 +14,7 @@ class ModeSelector {
 public:
     static constexpr int kShortClickMs = 700;
     static constexpr int kDoubleClickWindowMs = 400;
-    static constexpr int kEnterMenuMs = 4000; // Diubah menjadi 4 detik
+    static constexpr int kEnterMenuMs = 2500;
     static constexpr int kConfirmMs = 2000;
     static constexpr int kMenuTimeoutMs = 10000;
 

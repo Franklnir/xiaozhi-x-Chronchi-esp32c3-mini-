@@ -350,13 +350,12 @@ public:
                         app.ToggleChatState();
                     }
                 },
-                [this]() {
-                    ESP_LOGW(TAG, "Tombol GPIO 3 ditekan lama (4 detik) -> Masuk ke mode konfigurasi WiFi");
-                    auto display = GetDisplay();
-                    if (display != nullptr) {
-                        display->ShowNotification("Mode Konfigurasi WiFi...", 3000);
+                []() {
+                    auto& app = Application::GetInstance();
+                    auto state = app.GetDeviceState();
+                    if (state == kDeviceStateListening || state == kDeviceStateSpeaking) {
+                        app.ToggleChatState();
                     }
-                    EnterWifiConfigMode();
                 });
             InitializeButtons();
             InitializeHandsFreeMode();

@@ -59,7 +59,7 @@ def check_mode_contract() -> None:
     assert "nvs_commit(handle)" in store
     assert "DefaultMode()" in store and "defaulting to %s" in store
     assert "kShortClickMs = 700" in selector
-    assert "kEnterMenuMs = 4000" in selector
+    assert "kEnterMenuMs = 2500" in selector
     assert "kConfirmMs = 2000" in selector
     assert "kMenuTimeoutMs = 10000" in selector
     assert "must_release_ = true" in selector

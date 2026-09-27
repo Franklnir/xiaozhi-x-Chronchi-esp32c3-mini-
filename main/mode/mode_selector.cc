@@ -171,17 +171,12 @@ void ModeSelector::Tick() {
             now - press_started_us_ >= MsToUs(kEnterMenuMs)) {
             pending_single_click_ = false;
             long_press_fired_ = true;
-            if (before_menu_) {
-                // Trigger action long press 4s (misal: masuk konfigurasi WiFi)
-                fire_single_click = before_menu_;
-            } else {
-                menu_active_ = true;
-                must_release_ = true;
-                selected_mode_ = current_mode_;
-                menu_deadline_us_ = now + MsToUs(kMenuTimeoutMs);
-                enter_menu = true;
-                selected = selected_mode_;
-            }
+            menu_active_ = true;
+            must_release_ = true;
+            selected_mode_ = current_mode_;
+            menu_deadline_us_ = now + MsToUs(kMenuTimeoutMs);
+            enter_menu = true;
+            selected = selected_mode_;
         } else if (menu_active_ && !must_release_ && pressed_ && !confirm_fired_ &&
                    now - press_started_us_ >= MsToUs(kConfirmMs)) {
             confirm_fired_ = true;

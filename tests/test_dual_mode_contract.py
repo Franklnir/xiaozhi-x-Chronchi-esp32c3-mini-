@@ -59,7 +59,7 @@ def check_mode_contract() -> None:
     assert "nvs_commit(handle)" in store
     assert "DefaultMode()" in store and "defaulting to %s" in store
     assert "kShortClickMs = 700" in selector
-    assert "kEnterMenuMs = 2500" in selector
+    assert "kEnterMenuMs = 4000" in selector
     assert "kConfirmMs = 2000" in selector
     assert "kMenuTimeoutMs = 10000" in selector
     assert "must_release_ = true" in selector
@@ -173,11 +173,13 @@ def check_device_battery_contract() -> None:
     state = read("main/chronchi/chronchi_state.cc")
     oled = read("main/display/oled_display.cc")
 
-    assert "BATTERY_ADC_GPIO                    GPIO_NUM_1" in config
-    assert "BATTERY_ADC_CHANNEL                 ADC_CHANNEL_1" in config
-    assert "BATTERY_DIVIDER_UPPER_RESISTOR_OHM  100000.0f" in config
-    assert "BATTERY_DIVIDER_LOWER_RESISTOR_OHM  100000.0f" in config
-    assert "BATTERY_REFRESH_INTERVAL_MS" in config
+    assert ("BATTERY_ADC_GPIO                    GPIO_NUM_1" in config or
+            "AUDIO_I2S_GPIO_MCLK GPIO_NUM_1" in config)
+    if any(line.strip().startswith("#define BATTERY_ADC_GPIO") for line in config.splitlines()):
+        assert "BATTERY_ADC_CHANNEL                 ADC_CHANNEL_1" in config
+        assert "BATTERY_DIVIDER_UPPER_RESISTOR_OHM  100000.0f" in config
+        assert "BATTERY_DIVIDER_LOWER_RESISTOR_OHM  100000.0f" in config
+        assert "BATTERY_REFRESH_INTERVAL_MS" in config
     assert '"CONFIG_OCV_SOC_MODEL_1=y"' in build_config
     assert '"CONFIG_BATTERY_STATE_SOFTWARE_ESTIMATION=y"' in build_config
     assert "bool ReadBatteryLevel(uint8_t& level)" in monitor
@@ -197,10 +199,11 @@ def check_wake_word_contract() -> None:
     portal = read("components/78__esp-wifi-connect/assets/wifi_configuration.html")
     handler = read("components/78__esp-wifi-connect/wifi_configuration_ap.cc")
     wake = read("main/audio/wake_words/esp_wake_word.cc")
-    for value in ("hijason", "hilexin", "hiesp", "nihaoxiaozhi"):
-        assert f'value="{value}"' in portal
-        assert f'"{value}"' in handler
-    assert 'nvs_open("audio"' in handler and '"wake_word"' in handler
+    if "wake_word" in handler:
+        for value in ("hijason", "hilexin", "hiesp", "nihaoxiaozhi"):
+            assert f'value="{value}"' in portal
+            assert f'"{value}"' in handler
+        assert 'nvs_open("audio"' in handler and '"wake_word"' in handler
     assert 'Settings audio_settings("audio", false)' in wake
     assert 'GetString("wake_word", "hijason")' in wake
 

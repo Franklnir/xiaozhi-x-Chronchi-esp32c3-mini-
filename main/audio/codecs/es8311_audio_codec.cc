@@ -38,9 +38,11 @@ Es8311AudioCodec::Es8311AudioCodec(void* i2c_master_handle, i2c_port_t i2c_port,
     assert(data_if_ != NULL);
 
     // Output
+    // Note: esp_codec_dev expects 8-bit I2C address (e.g. 0x30 for 7-bit 0x18)
+    uint8_t codec_i2c_addr = (es8311_addr < 0x20) ? (uint8_t)(es8311_addr << 1) : es8311_addr;
     audio_codec_i2c_cfg_t i2c_cfg = {
         .port = i2c_port,
-        .addr = es8311_addr,
+        .addr = codec_i2c_addr,
         .bus_handle = i2c_master_handle,
     };
     ctrl_if_ = audio_codec_new_i2c_ctrl(&i2c_cfg);
@@ -53,7 +55,7 @@ Es8311AudioCodec::Es8311AudioCodec(void* i2c_master_handle, i2c_port_t i2c_port,
     es8311_cfg.ctrl_if = ctrl_if_;
     es8311_cfg.gpio_if = gpio_if_;
     es8311_cfg.codec_mode = ESP_CODEC_DEV_WORK_MODE_BOTH;
-    es8311_cfg.pa_pin = pa_pin;
+    es8311_cfg.pa_pin = GPIO_NUM_NC; // We manage pa_pin directly in UpdateDeviceState with anti-pop timing
     es8311_cfg.use_mclk = use_mclk;
     es8311_cfg.hw_gain.pa_voltage = 5.0;
     es8311_cfg.hw_gain.codec_dac_voltage = 3.3;
@@ -61,9 +63,9 @@ Es8311AudioCodec::Es8311AudioCodec(void* i2c_master_handle, i2c_port_t i2c_port,
     codec_if_ = es8311_codec_new(&es8311_cfg);
 
     if (codec_if_ == nullptr) {
-        ESP_LOGE(TAG, "Failed to create Es8311AudioCodec");
+        ESP_LOGE(TAG, "Failed to create Es8311AudioCodec (I2C addr: 0x%02x)", codec_i2c_addr);
     } else {
-        ESP_LOGI(TAG, "Es8311AudioCodec initialized");
+        ESP_LOGI(TAG, "Es8311AudioCodec initialized successfully (I2C addr: 0x%02x)", codec_i2c_addr);
     }
 }
 
@@ -83,13 +85,20 @@ void Es8311AudioCodec::UpdateDeviceState() {
     }
 
     if ((input_enabled_ || output_enabled_) && dev_ == nullptr) {
+        if (codec_if_ == nullptr) {
+            ESP_LOGE(TAG, "Cannot open codec dev: codec_if_ is NULL");
+            return;
+        }
         esp_codec_dev_cfg_t dev_cfg = {
             .dev_type = ESP_CODEC_DEV_TYPE_IN_OUT,
             .codec_if = codec_if_,
             .data_if = data_if_,
         };
         dev_ = esp_codec_dev_new(&dev_cfg);
-        assert(dev_ != NULL);
+        if (dev_ == nullptr) {
+            ESP_LOGE(TAG, "Failed to create esp_codec_dev");
+            return;
+        }
 
         esp_codec_dev_sample_info_t fs = {
             .bits_per_sample = 16,
@@ -98,9 +107,9 @@ void Es8311AudioCodec::UpdateDeviceState() {
             .sample_rate = (uint32_t)input_sample_rate_,
             .mclk_multiple = 0,
         };
-        ESP_ERROR_CHECK(esp_codec_dev_open(dev_, &fs));
-        ESP_ERROR_CHECK(esp_codec_dev_set_in_gain(dev_, input_gain_));
-        ESP_ERROR_CHECK(esp_codec_dev_set_out_vol(dev_, output_volume_));
+        ESP_ERROR_CHECK_WITHOUT_ABORT(esp_codec_dev_open(dev_, &fs));
+        ESP_ERROR_CHECK_WITHOUT_ABORT(esp_codec_dev_set_in_gain(dev_, input_gain_));
+        ESP_ERROR_CHECK_WITHOUT_ABORT(esp_codec_dev_set_out_vol(dev_, output_volume_));
     } else if (!input_enabled_ && !output_enabled_ && dev_ != nullptr) {
         esp_codec_dev_close(dev_);
         dev_ = nullptr;

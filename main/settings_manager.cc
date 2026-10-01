@@ -87,7 +87,19 @@ bool SettingsManager::LoadFromNvs() {
         settings_.server_domain = "xiaozhiscig.biz.id";
     }
     load_string("wake_word", settings_.wake_word);
-    if (settings_.wake_word.empty() || settings_.wake_word == "hilexin") {
+    if (settings_.wake_word.empty()) {
+        nvs_handle_t aux_nvs;
+        if (nvs_open("audio", NVS_READONLY, &aux_nvs) == ESP_OK) {
+            char buf[32] = {};
+            size_t len = sizeof(buf);
+            if (nvs_get_str(aux_nvs, "wake_word", buf, &len) == ESP_OK && len > 0) {
+                settings_.wake_word = buf;
+            }
+            nvs_close(aux_nvs);
+        }
+    }
+    if (settings_.wake_word != "hijason" && settings_.wake_word != "hilexin" &&
+        settings_.wake_word != "hiesp" && settings_.wake_word != "nihaoxiaozhi") {
         settings_.wake_word = "hijason";
     }
     load_string("oled_mode", settings_.oled_mode);
@@ -360,8 +372,11 @@ void SettingsManager::SetServerDomain(const std::string& domain) {
 
 std::string SettingsManager::GetWakeWord() const { return settings_.wake_word; }
 void SettingsManager::SetWakeWord(const std::string& wake_word) {
-    settings_.wake_word = wake_word;
-    Save();
+    if (wake_word == "hijason" || wake_word == "hilexin" ||
+        wake_word == "hiesp" || wake_word == "nihaoxiaozhi") {
+        settings_.wake_word = wake_word;
+        Save();
+    }
 }
 
 std::string SettingsManager::GetOledMode() const { return settings_.oled_mode; }
@@ -485,7 +500,12 @@ bool SettingsManager::ImportFromJson(const std::string& json) {
         settings_.server_domain = item->valuestring;
     }
     item = cJSON_GetObjectItem(root, "wake_word");
-    if (cJSON_IsString(item)) settings_.wake_word = item->valuestring;
+    if (cJSON_IsString(item) && item->valuestring) {
+        std::string val = item->valuestring;
+        if (val == "hijason" || val == "hilexin" || val == "hiesp" || val == "nihaoxiaozhi") {
+            settings_.wake_word = val;
+        }
+    }
     
     item = cJSON_GetObjectItem(root, "oled_mode");
     if (cJSON_IsString(item)) settings_.oled_mode = item->valuestring;

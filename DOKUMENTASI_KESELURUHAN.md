@@ -250,7 +250,7 @@ Untuk memberikan kontrol instan dan ergonomis, firmware mengadopsi skema dua tom
 | Speaker 3W 4Ω | Audio output | Rp 10.000 | ke MAX98357A |
 | Push Button 1 | Tombol Utama (Chat, Stop 0ms, Mode Switch, Hold Menu) | Rp 1.000 | GPIO3 |
 | Push Button 2 | Tombol Hands-Free (Toggle Auto-Listen, Hold 5s Reset SSID) | Rp 1.000 | GPIO2 |
-| Motor Getar / Buzzer | Haptic notifikasi & alarm temukan perangkat (opsional) | Rp 3.000 | GPIO20 |
+| Modul Motor Getar | Haptic getaran notifikasi & alarm (opsional) | Rp 3.000 | GPIO20 |
 | SSD1306 OLED | Display 128x64 (opsional) | Rp 25.000 | GPIO0(SDA), GPIO10(SCL) |
 
 ### 5.2 Wiring Diagram

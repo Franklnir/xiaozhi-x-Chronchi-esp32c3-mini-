@@ -231,6 +231,8 @@ void ChronchiState::ApplyScreen(const ChronchiScreen& screen) {
 
     if (screen.type == ChronchiScreenType::Navigation) {
         navigation_active_ = true;
+        last_navigation_us_ = now;
+        saved_navigation_ = screen;
         SetActiveLocked(screen, now);
         return;
     }
@@ -243,8 +245,13 @@ void ChronchiState::ApplyScreen(const ChronchiScreen& screen) {
             static_cast<uint8_t>(home_.notification_count + 1), 99);
     }
 
-    if (!navigation_active_ &&
-        (ActiveExpiredLocked(now) || PriorityFor(screen.type) >= PriorityFor(active_.type))) {
+    if (navigation_active_) {
+        // Display transient notification for its normal duration over navigation
+        SetActiveLocked(screen, now);
+        return;
+    }
+
+    if (ActiveExpiredLocked(now) || PriorityFor(screen.type) >= PriorityFor(active_.type)) {
         SetActiveLocked(screen, now);
     } else {
         // The event is accepted but cannot steal a higher-priority screen.
@@ -255,13 +262,19 @@ void ChronchiState::ApplyScreen(const ChronchiScreen& screen) {
 void ChronchiState::StopNavigation() {
     std::lock_guard<std::mutex> lock(mutex_);
     navigation_active_ = false;
+    last_navigation_us_ = 0;
+    saved_navigation_ = {};
     SetActiveLocked(home_, esp_timer_get_time());
 }
 
 void ChronchiState::DismissTransient() {
     std::lock_guard<std::mutex> lock(mutex_);
-    if (navigation_active_ || active_.type == ChronchiScreenType::Home) return;
-    SetActiveLocked(home_, esp_timer_get_time());
+    if (active_.type == ChronchiScreenType::Home) return;
+    if (navigation_active_) {
+        SetActiveLocked(saved_navigation_, esp_timer_get_time());
+    } else {
+        SetActiveLocked(home_, esp_timer_get_time());
+    }
 }
 
 void ChronchiState::ShowSystem(const char* primary, const char* secondary) {
@@ -276,8 +289,23 @@ void ChronchiState::ShowSystem(const char* primary, const char* secondary) {
 bool ChronchiState::Tick() {
     std::lock_guard<std::mutex> lock(mutex_);
     const int64_t now = esp_timer_get_time();
-    if (!navigation_active_ && ActiveExpiredLocked(now)) {
+
+    // Auto-revert navigation if no update received for 60 seconds
+    if (navigation_active_ && last_navigation_us_ != 0 &&
+        (now - last_navigation_us_ > 60 * 1000 * 1000LL)) {
+        navigation_active_ = false;
+        last_navigation_us_ = 0;
+        saved_navigation_ = {};
         SetActiveLocked(home_, now);
+        return true;
+    }
+
+    if (ActiveExpiredLocked(now)) {
+        if (navigation_active_) {
+            SetActiveLocked(saved_navigation_, now);
+        } else {
+            SetActiveLocked(home_, now);
+        }
         return true;
     }
     return false;

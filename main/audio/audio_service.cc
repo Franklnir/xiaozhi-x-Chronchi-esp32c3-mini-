@@ -837,7 +837,15 @@ void AudioService::SetModelsList(srmodel_list_t* models_list) {
         wake_word_ = nullptr;
     }
 #elif CONFIG_IDF_TARGET_ESP32C3
+#if !defined(CONFIG_WAKE_WORD_DISABLED) || !CONFIG_WAKE_WORD_DISABLED
+    if (esp_srmodel_filter(models_list_, ESP_WN_PREFIX, NULL) != nullptr) {
+        wake_word_ = std::make_unique<EspWakeWord>();
+    } else {
+        wake_word_ = nullptr;
+    }
+#else
     wake_word_ = nullptr;
+#endif
 #else
     if (esp_srmodel_filter(models_list_, ESP_WN_PREFIX, NULL) != nullptr) {
         wake_word_ = std::make_unique<EspWakeWord>();

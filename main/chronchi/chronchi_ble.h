@@ -2,6 +2,7 @@
 #define XIAOZHI_CHRONCHI_BLE_H_
 
 #include "chronchi_protocol.h"
+#include "chronos_protocol.h"
 #include "chronchi_ota.h"
 #include "chronchi_state.h"
 
@@ -23,6 +24,7 @@ public:
 
     // Access protocol for notification callback registration
     ChronchiProtocol& GetProtocol() { return protocol_; }
+    ChronosProtocol& GetChronosProtocol() { return chronos_protocol_; }
 
     static int GattAccess(uint16_t connection_handle, uint16_t attribute_handle,
                           struct ble_gatt_access_ctxt* context, void* arg);
@@ -49,13 +51,20 @@ private:
     void QueueResponse(ResponseKind kind, uint8_t sequence, uint8_t packet_type,
                        const char* error = "");
     bool Notify(const uint8_t* data, size_t length);
+    bool NotifyChronos(const uint8_t* data, size_t length);
     bool NotifyResponse(const PendingResponse& response);
+    void SendChronosHandshake();
 
     ChronchiState& state_;
     ChronchiProtocol protocol_;
+    ChronosProtocol chronos_protocol_;
     ChronchiOta ota_;
     std::atomic<uint16_t> connection_handle_{0xffff};
     std::atomic<bool> notify_subscribed_{false};
+    std::atomic<bool> chronos_subscribed_{false};
+    std::atomic<bool> chronos_handshake_pending_{false};
+    std::atomic<int64_t> chronos_handshake_send_us_{0};
+    std::atomic<bool> adv_toggle_{true};
     std::atomic<bool> link_secure_{false};
     std::atomic<uint16_t> pending_pairing_handle_{0xffff};
     std::atomic<uint32_t> pending_pairing_number_{0};

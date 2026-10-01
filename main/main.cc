@@ -6,6 +6,7 @@
 #include <esp_event.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
+#include <esp_bt.h>
 
 #include "application.h"
 #include "chronchi/chronchi_mode.h"
@@ -43,6 +44,10 @@ extern "C" void app_main(void)
 #endif
 
     ESP_LOGI(TAG, "Radio policy: Xiaozhi owns Wi-Fi; Chronchi BLE is not initialized");
+#if CONFIG_BT_ENABLED
+    esp_err_t bt_err = esp_bt_mem_release(ESP_BT_MODE_BLE);
+    ESP_LOGI(TAG, "Released BT controller memory for Xiaozhi: %s", esp_err_to_name(bt_err));
+#endif
     auto& app = Application::GetInstance();
     app.Initialize();
     app.Run();  // This function runs the main event loop and never returns

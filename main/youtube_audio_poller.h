@@ -5,6 +5,9 @@
 #include <freertos/task.h>
 #include <string>
 #include <atomic>
+#include <mutex>
+
+class Http;
 
 class YouTubeAudioPoller {
 public:
@@ -43,6 +46,9 @@ private:
     std::string pending_video_id_;
     std::string pending_title_;
     std::string pending_query_;
+
+    std::mutex http_mutex_;
+    Http* active_http_ = nullptr;
 };
 
 #endif // YOUTUBE_AUDIO_POLLER_H_

@@ -48,8 +48,23 @@ static const ble_uuid128_t kTxUuid = BLE_UUID128_INIT(
     0x01, 0xa0, 0xf0, 0xd4, 0x7f, 0x0d, 0x25, 0x9f,
     0x4d, 0x4d, 0x2f, 0x6f, 0x03, 0x00, 0x9e, 0x7c);
 
+// Chronos / Nordic UART Service (NUS) UUIDs (Little-Endian)
+// Service: 6e400001-b5a3-f393-e0a9-e50e24dcca9e
+static const ble_uuid128_t kChronosServiceUuid = BLE_UUID128_INIT(
+    0x9e, 0xca, 0xdc, 0x24, 0x0e, 0xe5, 0xa9, 0xe0,
+    0x93, 0xf3, 0xa3, 0xb5, 0x01, 0x00, 0x40, 0x6e);
+// Phone -> ESP32 RX: 6e400002-b5a3-f393-e0a9-e50e24dcca9e
+static const ble_uuid128_t kChronosRxUuid = BLE_UUID128_INIT(
+    0x9e, 0xca, 0xdc, 0x24, 0x0e, 0xe5, 0xa9, 0xe0,
+    0x93, 0xf3, 0xa3, 0xb5, 0x02, 0x00, 0x40, 0x6e);
+// ESP32 -> Phone TX: 6e400003-b5a3-f393-e0a9-e50e24dcca9e
+static const ble_uuid128_t kChronosTxUuid = BLE_UUID128_INIT(
+    0x9e, 0xca, 0xdc, 0x24, 0x0e, 0xe5, 0xa9, 0xe0,
+    0x93, 0xf3, 0xa3, 0xb5, 0x03, 0x00, 0x40, 0x6e);
+
 ChronchiBle* g_instance = nullptr;
 uint16_t g_tx_value_handle = 0;
+uint16_t g_chronos_tx_value_handle = 0;
 
 static const ble_gatt_chr_def kCharacteristics[] = {
     {
@@ -84,6 +99,30 @@ static const ble_gatt_chr_def kCharacteristics[] = {
     {},
 };
 
+static const ble_gatt_chr_def kChronosCharacteristics[] = {
+    {
+        .uuid = &kChronosRxUuid.u,
+        .access_cb = ChronchiBle::GattAccess,
+        .arg = nullptr,
+        .descriptors = nullptr,
+        .flags = BLE_GATT_CHR_F_WRITE | BLE_GATT_CHR_F_WRITE_NO_RSP,
+        .min_key_size = 0,
+        .val_handle = nullptr,
+        .cpfd = nullptr,
+    },
+    {
+        .uuid = &kChronosTxUuid.u,
+        .access_cb = ChronchiBle::GattAccess,
+        .arg = nullptr,
+        .descriptors = nullptr,
+        .flags = BLE_GATT_CHR_F_NOTIFY,
+        .min_key_size = 0,
+        .val_handle = &g_chronos_tx_value_handle,
+        .cpfd = nullptr,
+    },
+    {},
+};
+
 static const ble_gatt_svc_def kServices[] = {
     {
         .type = BLE_GATT_SVC_TYPE_PRIMARY,
@@ -91,12 +130,18 @@ static const ble_gatt_svc_def kServices[] = {
         .includes = nullptr,
         .characteristics = kCharacteristics,
     },
+    {
+        .type = BLE_GATT_SVC_TYPE_PRIMARY,
+        .uuid = &kChronosServiceUuid.u,
+        .includes = nullptr,
+        .characteristics = kChronosCharacteristics,
+    },
     {},
 };
 }  // namespace
 
 ChronchiBle::ChronchiBle(ChronchiState& state, const char* mode)
-    : state_(state), protocol_(state) {
+    : state_(state), protocol_(state), chronos_protocol_(state) {
     ChronchiState::CopyText(mode_, sizeof(mode_), mode);
 }
 
@@ -174,11 +219,15 @@ void ChronchiBle::OnReset(int reason) {
     if (g_instance == nullptr) return;
     g_instance->connection_handle_.store(0xffff);
     g_instance->notify_subscribed_.store(false);
+    g_instance->chronos_subscribed_.store(false);
+    g_instance->chronos_handshake_pending_.store(false);
     g_instance->link_secure_.store(false);
     g_instance->pending_pairing_handle_.store(0xffff);
     g_instance->ota_.Abort();
     g_instance->ClearResponses();
     g_instance->protocol_.Reset();
+    g_instance->chronos_protocol_.Reset();
+    g_instance->state_.StopNavigation();
     g_instance->state_.SetSubscribed(false);
     g_instance->state_.SetConnection(false);
 }
@@ -197,7 +246,9 @@ void ChronchiBle::OnSync() {
 void ChronchiBle::Advertise() {
     ble_hs_adv_fields fields = {};
     fields.flags = BLE_HS_ADV_F_DISC_GEN | BLE_HS_ADV_F_BREDR_UNSUP;
-    fields.uuids128 = const_cast<ble_uuid128_t*>(&kServiceUuid);
+    const bool chronos_adv = adv_toggle_.load();
+    const ble_uuid128_t* active_uuid = chronos_adv ? &kChronosServiceUuid : &kServiceUuid;
+    fields.uuids128 = const_cast<ble_uuid128_t*>(active_uuid);
     fields.num_uuids128 = 1;
     fields.uuids128_is_complete = 1;
     int result = ble_gap_adv_set_fields(&fields);
@@ -224,10 +275,11 @@ void ChronchiBle::Advertise() {
     parameters.disc_mode = BLE_GAP_DISC_MODE_GEN;
     parameters.itvl_min = 0x00A0; // 100 ms (coexistence friendly)
     parameters.itvl_max = 0x0140; // 200 ms
-    result = ble_gap_adv_start(address_type, nullptr, BLE_HS_FOREVER,
+    result = ble_gap_adv_start(address_type, nullptr, 1000,
                                &parameters, GapEvent, this);
     if (result == 0) {
-        ESP_LOGI(kTag, "Advertising ESPBridge V1 as '%s'", device_name_);
+        ESP_LOGI(kTag, "Advertising %s as '%s'",
+                 chronos_adv ? "Chronos NUS" : "ESPBridge V1", device_name_);
     } else {
         ESP_LOGE(kTag, "Advertising start failed: rc=%d", result);
     }
@@ -243,10 +295,13 @@ int ChronchiBle::GapEvent(ble_gap_event* event, void* arg) {
             if (event->connect.status == 0) {
                 self->connection_handle_.store(event->connect.conn_handle);
                 self->notify_subscribed_.store(false);
+                self->chronos_subscribed_.store(false);
+                self->chronos_handshake_pending_.store(false);
                 self->link_secure_.store(!kSecurityEnabled);
                 self->pending_pairing_handle_.store(0xffff);
                 self->ClearResponses();
                 self->protocol_.Reset();
+                self->chronos_protocol_.Reset();
                 self->state_.SetConnection(true);
                 ESP_LOGI(kTag, "ESPBridge phone connected, handle=%u heap=%u min=%u",
                          static_cast<unsigned>(event->connect.conn_handle),
@@ -275,11 +330,15 @@ int ChronchiBle::GapEvent(ble_gap_event* event, void* arg) {
             ESP_LOGI(kTag, "Phone disconnected, reason=%d", event->disconnect.reason);
             self->connection_handle_.store(0xffff);
             self->notify_subscribed_.store(false);
+            self->chronos_subscribed_.store(false);
+            self->chronos_handshake_pending_.store(false);
             self->link_secure_.store(false);
             self->pending_pairing_handle_.store(0xffff);
             self->ota_.Abort();
             self->ClearResponses();
             self->protocol_.Reset();
+            self->chronos_protocol_.Reset();
+            self->state_.StopNavigation();
             self->state_.SetSubscribed(false);
             self->state_.SetConnection(false);
             self->Advertise();
@@ -294,6 +353,16 @@ int ChronchiBle::GapEvent(ble_gap_event* event, void* arg) {
                                         static_cast<uint8_t>(ChronchiPacketType::Ack));
                 }
                 ESP_LOGI(kTag, "Protocol notifications %s",
+                         subscribed ? "subscribed" : "unsubscribed");
+            } else if (event->subscribe.attr_handle == g_chronos_tx_value_handle) {
+                const bool subscribed = event->subscribe.cur_notify != 0;
+                self->chronos_subscribed_.store(subscribed);
+                self->state_.SetSubscribed(subscribed);
+                if (subscribed) {
+                    self->chronos_handshake_pending_.store(true);
+                    self->chronos_handshake_send_us_.store(esp_timer_get_time() + 200 * 1000);
+                }
+                ESP_LOGI(kTag, "Chronos notifications %s",
                          subscribed ? "subscribed" : "unsubscribed");
             }
             return 0;
@@ -338,6 +407,7 @@ int ChronchiBle::GapEvent(ble_gap_event* event, void* arg) {
             return BLE_GAP_REPEAT_PAIRING_IGNORE;
         }
         case BLE_GAP_EVENT_ADV_COMPLETE:
+            self->adv_toggle_.store(!self->adv_toggle_.load());
             self->Advertise();
             return 0;
         case BLE_GAP_EVENT_MTU:
@@ -399,6 +469,12 @@ int ChronchiBle::GattAccess(uint16_t, uint16_t, ble_gatt_access_ctxt* context, v
     const int result = ble_hs_mbuf_to_flat(context->om, packet.data(), packet.size(), &copied);
     if (result != 0 || copied != packet_length) return BLE_ATT_ERR_UNLIKELY;
 
+    // Check if written characteristic is Chronos NUS RX
+    if (context->chr != nullptr && ble_uuid_cmp(context->chr->uuid, &kChronosRxUuid.u) == 0) {
+        g_instance->chronos_protocol_.FeedFrame(packet.data(), copied);
+        return 0;
+    }
+
     if (copied >= ChronchiProtocol::kHeaderSize &&
         ChronchiOta::IsOtaPacket(packet[2])) {
         const ChronchiOtaReply reply = g_instance->ota_.HandleFrame(packet.data(), copied);
@@ -451,6 +527,35 @@ bool ChronchiBle::Notify(const uint8_t* data, size_t length) {
     return true;
 }
 
+bool ChronchiBle::NotifyChronos(const uint8_t* data, size_t length) {
+    const uint16_t handle = connection_handle_.load();
+    if (!chronos_subscribed_.load() || handle == 0xffff || data == nullptr || length == 0 ||
+        length > UINT16_MAX) {
+        return false;
+    }
+    os_mbuf* packet = ble_hs_mbuf_from_flat(data, static_cast<uint16_t>(length));
+    if (packet == nullptr) return false;
+    const int result = ble_gatts_notify_custom(handle, g_chronos_tx_value_handle, packet);
+    if (result != 0) {
+        ESP_LOGW(kTag, "Chronos notify failed: rc=%d", result);
+        return false;
+    }
+    return true;
+}
+
+void ChronchiBle::SendChronosHandshake() {
+    uint8_t buffer[64] = {};
+    const size_t info_len = ChronosProtocol::BuildInfoPacket(buffer, sizeof(buffer));
+    if (info_len > 0) {
+        NotifyChronos(buffer, info_len);
+    }
+    const size_t bat_len = ChronosProtocol::BuildBatteryPacket(buffer, sizeof(buffer), 85, false);
+    if (bat_len > 0) {
+        NotifyChronos(buffer, bat_len);
+    }
+    ESP_LOGI(kTag, "Chronos handshake sent");
+}
+
 bool ChronchiBle::NotifyResponse(const PendingResponse& response) {
     char json[256] = {};
     ChronchiPacketType response_type = ChronchiPacketType::Ack;
@@ -482,7 +587,7 @@ bool ChronchiBle::NotifyResponse(const PendingResponse& response) {
             mode_);
     } else {
         std::snprintf(json, sizeof(json), "{\"ok\":false,\"error\":\"%.32s\"}",
-                      response.error);
+                       response.error);
     }
 
     const size_t payload_length = std::strlen(json);
@@ -505,6 +610,16 @@ void ChronchiBle::Poll() {
         ESP_LOGI(kTag, "Restarting into verified OTA image");
         esp_restart();
     }
+
+    if (chronos_handshake_pending_.load()) {
+        const int64_t send_at = chronos_handshake_send_us_.load();
+        if (send_at != 0 && esp_timer_get_time() >= send_at) {
+            chronos_handshake_pending_.store(false);
+            chronos_handshake_send_us_.store(0);
+            SendChronosHandshake();
+        }
+    }
+
     PendingResponse response = {};
     {
         std::lock_guard<std::mutex> lock(response_mutex_);
@@ -538,9 +653,12 @@ void ChronchiBle::Stop() {
     // Clear state
     connection_handle_.store(0xffff);
     notify_subscribed_.store(false);
+    chronos_subscribed_.store(false);
+    chronos_handshake_pending_.store(false);
     link_secure_.store(false);
     ClearResponses();
     protocol_.Reset();
+    chronos_protocol_.Reset();
     state_.SetSubscribed(false);
     state_.SetConnection(false);
 

@@ -87,6 +87,13 @@ void YouTubeAudioPoller::Abort() {
         ESP_LOGI(TAG, "Abort requested for YouTube audio stream");
         abort_requested_ = true;
         Application::GetInstance().GetAudioService().ResetDecoder();
+        {
+            std::lock_guard<std::mutex> lock(http_mutex_);
+            if (active_http_ != nullptr) {
+                ESP_LOGI(TAG, "Force-closing active HTTP connection to stop stream immediately");
+                active_http_->Close();
+            }
+        }
     }
 }
 
@@ -419,17 +426,20 @@ void YouTubeAudioPoller::StreamAudio(const std::string& video_id, const std::str
     }
     size_t free_sram = heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
 
+    // Adaptive hybrid bitrate: 24k (max) down to 6k (min)
     std::string current_bitrate = "12k";
-    if (rssi >= -65 && free_sram >= 48000) {
+    if (rssi >= -60 && free_sram >= 48000) {
+        current_bitrate = "24k";
+    } else if (rssi >= -68 && free_sram >= 40000) {
         current_bitrate = "16k";
-    } else if (rssi >= -75 && free_sram >= 36000) {
+    } else if (rssi >= -76 && free_sram >= 32000) {
         current_bitrate = "12k";
-    } else if (rssi >= -82 && free_sram >= 28000) {
+    } else if (rssi >= -84 && free_sram >= 24000) {
         current_bitrate = "8k";
     } else {
         current_bitrate = "6k";
     }
-    ESP_LOGI(TAG, "Adaptive Profile Selected: RSSI=%d dBm, FreeSRAM=%u B -> Bitrate=%s",
+    ESP_LOGI(TAG, "Adaptive Profile Selected: RSSI=%d dBm, FreeSRAM=%u B -> Bitrate=%s (Adaptive range: 6k - 24k)",
              rssi, (unsigned int)free_sram, current_bitrate.c_str());
 
     static const uint8_t OGGS_MAGIC[4] = {'O', 'g', 'g', 'S'};
@@ -444,6 +454,10 @@ void YouTubeAudioPoller::StreamAudio(const std::string& video_id, const std::str
         auto http = network->CreateHttp(0);
         if (http == nullptr) {
             break;
+        }
+        {
+            std::lock_guard<std::mutex> lock(http_mutex_);
+            active_http_ = http.get();
         }
 
         float start_sec = frames_pushed * 0.060f;
@@ -469,8 +483,12 @@ void YouTubeAudioPoller::StreamAudio(const std::string& video_id, const std::str
         ESP_LOGI(TAG, "Connecting to stream URL: %s", stream_url.c_str());
         if (!http->Open("GET", stream_url)) {
             ESP_LOGE(TAG, "Failed to open stream URL: %s", stream_url.c_str());
+            {
+                std::lock_guard<std::mutex> lock(http_mutex_);
+                active_http_ = nullptr;
+            }
             http->Close();
-            if (frames_pushed > 0 && downshift_retries < 2) {
+            if (frames_pushed > 0 && downshift_retries < 2 && !abort_requested_.load()) {
                 downshift_retries++;
                 vTaskDelay(pdMS_TO_TICKS(500));
                 continue;
@@ -480,8 +498,12 @@ void YouTubeAudioPoller::StreamAudio(const std::string& video_id, const std::str
 
         if (http->GetStatusCode() != 200) {
             ESP_LOGE(TAG, "Stream returned HTTP %d", http->GetStatusCode());
+            {
+                std::lock_guard<std::mutex> lock(http_mutex_);
+                active_http_ = nullptr;
+            }
             http->Close();
-            if (frames_pushed > 0 && downshift_retries < 2) {
+            if (frames_pushed > 0 && downshift_retries < 2 && !abort_requested_.load()) {
                 downshift_retries++;
                 vTaskDelay(pdMS_TO_TICKS(500));
                 continue;
@@ -507,7 +529,10 @@ void YouTubeAudioPoller::StreamAudio(const std::string& video_id, const std::str
                 if (frames_pushed > 20 && q_size == 0) {
                     starvation_count++;
                     if (starvation_count >= 5) {
-                        if (current_bitrate == "16k") {
+                        if (current_bitrate == "24k") {
+                            current_bitrate = "16k";
+                            need_downshift = true;
+                        } else if (current_bitrate == "16k") {
                             current_bitrate = "12k";
                             need_downshift = true;
                         } else if (current_bitrate == "12k") {
@@ -549,7 +574,8 @@ void YouTubeAudioPoller::StreamAudio(const std::string& video_id, const std::str
                              n, total_bytes_streamed, frames_pushed);
                     if (frames_pushed > 10) {
                         if (current_bitrate != "6k") {
-                            if (current_bitrate == "16k") current_bitrate = "12k";
+                            if (current_bitrate == "24k") current_bitrate = "16k";
+                            else if (current_bitrate == "16k") current_bitrate = "12k";
                             else if (current_bitrate == "12k") current_bitrate = "8k";
                             else current_bitrate = "6k";
                             need_downshift = true;
@@ -669,11 +695,13 @@ void YouTubeAudioPoller::StreamAudio(const std::string& video_id, const std::str
                         packet->sample_rate = (sample_rate > 0) ? sample_rate : 16000;
                         packet->frame_duration = 60;
                         packet->payload.assign(pkt_ptr, pkt_ptr + pkt_len);
-                        app.GetAudioService().PushPacketToDecodeQueue(std::move(packet), true);
-                        frames_pushed++;
-                        if (frames_pushed == 1 || frames_pushed % 50 == 0) {
-                            ESP_LOGI(TAG, "Audio frame #%d pushed to decoder (len=%zu, q_size=%zu)",
-                                     frames_pushed, pkt_len, app.GetAudioService().GetDecodeQueueSize());
+                        if (!abort_requested_.load()) {
+                            app.GetAudioService().PushPacketToDecodeQueue(std::move(packet), true);
+                            frames_pushed++;
+                            if (frames_pushed == 1 || frames_pushed % 50 == 0) {
+                                ESP_LOGI(TAG, "Audio frame #%d pushed to decoder (len=%zu, q_size=%zu)",
+                                         frames_pushed, pkt_len, app.GetAudioService().GetDecodeQueueSize());
+                            }
                         }
                     }
 
@@ -690,6 +718,10 @@ void YouTubeAudioPoller::StreamAudio(const std::string& video_id, const std::str
             ESP_LOGE(TAG, "StreamAudio exception: %s", e.what());
         }
 
+        {
+            std::lock_guard<std::mutex> lock(http_mutex_);
+            active_http_ = nullptr;
+        }
         http->Close();
 
         if (!need_downshift || abort_requested_.load()) {

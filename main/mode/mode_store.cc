@@ -49,18 +49,6 @@ BootMode ModeStore::Load() {
         return current_mode_;
     }
     const BootMode requested_mode = static_cast<BootMode>(raw);
-    if (requested_mode == BootMode::Chronchi) {
-        // Chronchi is a one-shot boot mode. Consume its boot ticket before
-        // starting Chronchi so every later reset or power cycle returns to Xiaozhi.
-        const esp_err_t clear_err = Save(BootMode::Xiaozhi);
-        if (clear_err != ESP_OK) {
-            ESP_LOGE(kTag, "Cannot consume Chronchi one-shot ticket (%s); booting Xiaozhi for safety",
-                     esp_err_to_name(clear_err));
-            current_mode_ = BootMode::Xiaozhi;
-            return current_mode_;
-        }
-        ESP_LOGI(kTag, "Consumed Chronchi one-shot ticket; next boot will use Xiaozhi");
-    }
     current_mode_ = requested_mode;
     return current_mode_;
 }

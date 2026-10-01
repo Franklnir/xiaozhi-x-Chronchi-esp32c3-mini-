@@ -24,6 +24,7 @@
 #include "mode/mode_selector.h"
 #include "mode/mode_store.h"
 #include "settings.h"
+#include "youtube_audio_poller.h"
 
 #include <esp_err.h>
 #include <esp_log.h>
@@ -47,6 +48,7 @@ private:
     bool hands_free_enabled_ = true;
     bool wait_for_wake_word_ = false;
     bool boot_button_pressed_ = false;
+    bool youtube_interrupted_ = false;
     DeviceState last_observed_state_ = kDeviceStateUnknown;
 
     bool is_es8311_detected_ = false;
@@ -73,7 +75,12 @@ private:
 
     void ShowWakeWordStandbyHint() {
         Settings audio_settings("audio", false);
-        const std::string selected = audio_settings.GetString("wake_word", "hijason");
+        std::string selected = audio_settings.GetString("wake_word", "hijason");
+        if (selected.empty() || (selected != "hijason" && selected != "hilexin" &&
+            selected != "hiesp" && selected != "nihaoxiaozhi")) {
+            Settings xz_settings("xiaozhi", false);
+            selected = xz_settings.GetString("wake_word", "hijason");
+        }
         const char* label = "Hi Jason";
         if (selected == "hilexin") label = "Hi Lexin";
         else if (selected == "hiesp") label = "Hi ESP";
@@ -141,10 +148,25 @@ private:
     void InitializeButtons() {
         boot_button_.OnPressDown([this]() {
             boot_button_pressed_ = true;
+            if (YouTubeAudioPoller::GetInstance().IsPlaying()) {
+                ESP_LOGI(TAG, "GPIO 3 pressed while playing YouTube -> Instant Abort (0 ms)!");
+                youtube_interrupted_ = true;
+                YouTubeAudioPoller::GetInstance().Abort();
+                auto display = GetDisplay();
+                if (display != nullptr) {
+                    display->ShowNotification("Lagu dihentikan", 2000);
+                }
+                return;
+            }
+            youtube_interrupted_ = false;
             mode_selector_->OnPressDown();
         });
         boot_button_.OnPressUp([this]() {
             boot_button_pressed_ = false;
+            if (youtube_interrupted_) {
+                youtube_interrupted_ = false;
+                return;
+            }
             mode_selector_->OnPressUp();
         });
 

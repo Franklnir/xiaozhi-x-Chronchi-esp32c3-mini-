@@ -44,6 +44,8 @@ private:
     bool connected_ = false;
     bool subscribed_ = false;
     bool navigation_active_ = false;
+    int64_t last_navigation_us_ = 0;
+    ChronchiScreen saved_navigation_ = {};
     uint8_t device_battery_ = 0;
     bool device_charging_ = false;
     bool device_battery_valid_ = false;

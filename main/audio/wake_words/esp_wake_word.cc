@@ -23,24 +23,7 @@ EspWakeWord::~EspWakeWord() {
     }
 }
 
-bool EspWakeWord::Initialize(AudioCodec* codec, srmodel_list_t* models_list) {
-    std::lock_guard<std::mutex> lock(mutex_);
-    codec_ = codec;
-
-    if (wakenet_model_ == nullptr) {
-        if (models_list == nullptr) {
-            wakenet_model_ = esp_srmodel_init("model");
-            owns_model_list_ = true;
-        } else {
-            wakenet_model_ = models_list;
-            owns_model_list_ = false;
-        }
-    }
-
-    if (wakenet_data_ != nullptr) {
-        return true;
-    }
-
+bool EspWakeWord::CreateWakeNetLocked() {
     if (wakenet_model_ == nullptr || wakenet_model_->num == -1) {
         ESP_LOGE(TAG, "Failed to initialize wakenet model");
         return false;
@@ -48,15 +31,20 @@ bool EspWakeWord::Initialize(AudioCodec* codec, srmodel_list_t* models_list) {
     // Pilihan wake word dapat dikonfigurasi via NVS ("audio"/"wake_word")
     Settings audio_settings("audio", false);
     std::string preferred = audio_settings.GetString("wake_word", "hijason");
-    if (preferred.empty() || preferred == "hilexin" ||
-        (preferred != "hijason" && preferred != "hiesp" && preferred != "nihaoxiaozhi")) {
-        ESP_LOGI(TAG, "Selecting 'hijason' (Hi Json) as active wake word");
+    if (preferred.empty() || (preferred != "hijason" && preferred != "hilexin" &&
+        preferred != "hiesp" && preferred != "nihaoxiaozhi")) {
+        Settings xz_settings("xiaozhi", false);
+        preferred = xz_settings.GetString("wake_word", "hijason");
+    }
+    if (preferred != "hijason" && preferred != "hilexin" &&
+        preferred != "hiesp" && preferred != "nihaoxiaozhi") {
+        ESP_LOGW(TAG, "Invalid wake-word setting '%s'; falling back to hijason", preferred.c_str());
         preferred = "hijason";
     }
 
     int selected_model_index = 0;
     if (wakenet_model_->num > 1) {
-        ESP_LOGW(TAG, "More than one model found, selecting preferred wake word: %s", preferred.c_str());
+        ESP_LOGI(TAG, "More than one model found, selecting preferred wake word: %s", preferred.c_str());
         bool found = false;
         for (int i = 0; i < wakenet_model_->num; ++i) {
             const char* candidate = wakenet_model_->model_name[i];
@@ -93,6 +81,7 @@ bool EspWakeWord::Initialize(AudioCodec* codec, srmodel_list_t* models_list) {
         ESP_LOGE(TAG, "Failed to create WakeNet model: %s", model_name);
         return false;
     }
+    active_wake_word_ = preferred;
 
     int frequency = wakenet_iface_->get_samp_rate(wakenet_data_);
     int audio_chunksize = wakenet_iface_->get_samp_chunksize(wakenet_data_);
@@ -104,12 +93,55 @@ bool EspWakeWord::Initialize(AudioCodec* codec, srmodel_list_t* models_list) {
     return true;
 }
 
+bool EspWakeWord::Initialize(AudioCodec* codec, srmodel_list_t* models_list) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    codec_ = codec;
+
+    if (wakenet_model_ == nullptr) {
+        if (models_list == nullptr) {
+            wakenet_model_ = esp_srmodel_init("model");
+            owns_model_list_ = true;
+        } else {
+            wakenet_model_ = models_list;
+            owns_model_list_ = false;
+        }
+    }
+
+    if (wakenet_data_ != nullptr) {
+        return true;
+    }
+
+    return CreateWakeNetLocked();
+}
+
 void EspWakeWord::OnWakeWordDetected(std::function<void(const std::string& wake_word)> callback) {
     wake_word_detected_callback_ = callback;
 }
 
 void EspWakeWord::Start() {
     std::lock_guard<std::mutex> lock(mutex_);
+    Settings audio_settings("audio", false);
+    std::string preferred = audio_settings.GetString("wake_word", "hijason");
+    if (preferred.empty() || (preferred != "hijason" && preferred != "hilexin" &&
+        preferred != "hiesp" && preferred != "nihaoxiaozhi")) {
+        Settings xz_settings("xiaozhi", false);
+        preferred = xz_settings.GetString("wake_word", "hijason");
+    }
+    if (preferred != "hijason" && preferred != "hilexin" &&
+        preferred != "hiesp" && preferred != "nihaoxiaozhi") {
+        preferred = "hijason";
+    }
+
+    if (wakenet_data_ != nullptr && active_wake_word_ != preferred) {
+        ESP_LOGI(TAG, "Wake word setting changed from '%s' to '%s', recreating runtime",
+                 active_wake_word_.c_str(), preferred.c_str());
+        wakenet_iface_->destroy(wakenet_data_);
+        wakenet_data_ = nullptr;
+    }
+
+    if (wakenet_data_ == nullptr) {
+        CreateWakeNetLocked();
+    }
     running_ = wakenet_data_ != nullptr;
 }
 

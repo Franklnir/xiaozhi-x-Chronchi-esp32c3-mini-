@@ -1,3 +1,4 @@
+#include "chronchi_alert.h"
 #include "chronchi_mode.h"
 
 #include "boards/esp32c3-inmp441/config.h"
@@ -29,6 +30,7 @@ void LogHeap(const char* stage) {
 ChronchiMode::ChronchiMode() : ble_(state_), button_(BOOT_BUTTON_GPIO) {}
 
 void ChronchiMode::Initialize() {
+    ChronchiAlert::GetInstance().Initialize(VIBRATION_MOTOR_PIN);
     ESP_LOGI(kTag, "Radio policy: Chronchi owns BLE; Wi-Fi initialization is forbidden");
     ESP_LOGI(kTag, "ESPBridge BLE V1 framed JSON mode; upstream Chronos protocol is disabled");
     LogHeap("before OLED/BLE");
@@ -38,6 +40,12 @@ void ChronchiMode::Initialize() {
     display_ = GetEsp32c3SharedOled(true);
     mode_selector_ = std::make_unique<ModeSelector>(
         BootMode::Chronchi, display_, [this]() {
+            if (ChronchiAlert::GetInstance().IsAlarmActive()) {
+                ESP_LOGI(kTag, "Dismissing active find alarm via button press");
+                ChronchiAlert::GetInstance().StopAlert();
+                state_.DismissTransient();
+                return;
+            }
             if (!ble_.ConfirmPairing()) state_.DismissTransient();
         });
     button_.OnPressDown([this]() {

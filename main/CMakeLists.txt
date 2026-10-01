@@ -86,8 +86,10 @@ if(CONFIG_ENABLE_CHRONCHI_MODE)
     list(APPEND SOURCES
         "chronchi/chronchi_state.cc"
         "chronchi/chronchi_protocol.cc"
+        "chronchi/chronos_protocol.cc"
         "chronchi/chronchi_ota.cc"
         "chronchi/chronchi_ble.cc"
+        "chronchi/chronchi_alert.cc"
         "chronchi/chronchi_mode.cc"
     )
 endif()

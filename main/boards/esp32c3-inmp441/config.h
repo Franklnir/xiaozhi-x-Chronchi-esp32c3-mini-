@@ -35,6 +35,11 @@
 #define HANDS_FREE_AUTO_LISTEN_RETRY_MS     5000
 #define HANDS_FREE_IDLE_TIMEOUT_MS          30000
 
+// Vibration Motor / Haptic Configuration (Chronchi notification & find device alarm)
+#ifndef VIBRATION_MOTOR_PIN
+#define VIBRATION_MOTOR_PIN GPIO_NUM_20  // Pin motor getar (Default GPIO 20 pada ESP32-C3 Super Mini)
+#endif
+
 // LED Configuration (optional - set to NC if not used)
 #define BUILTIN_LED_GPIO    GPIO_NUM_NC  // No built-in LED
 

@@ -183,6 +183,14 @@ ESP32 ← HTTP Chunked (Opus frames) ← Backend Custom
   ESP32-C3 memiliki keterbatasan RAM (~400KB SRAM). Mode Chronchi mematikan total Wi-Fi, audio pipeline I2S, WakeNet, dan WebSocket; seluruh resource radio dialihkan 100% ke Bluetooth Low Energy (ESP-NimBLE) ESPBridge V1 GATT.
 - **Companion App Android (Chronos / ESPBridge)**:
   Terkoneksi via BLE dengan nama advertising `Chronchi-XXYY` (diambil dari MAC address). Mendukung numeric comparison pairing 6 digit di layar OLED untuk koneksi aman.
+- **Notifikasi Bergetar (Haptic Feedback)**:
+  Ketika notifikasi masuk (WhatsApp, Telegram, SMS, Email, dll.), firmware memicu denyut getar ganda pada motor getar (GPIO 20: 100ms ON, 80ms OFF, 100ms ON) untuk memberikan sinyal taktil instan layaknya smartwatch.
+- **Fitur Temukan Perangkat (Find My Device) Berdering Bell Nyaring & Getar**:
+  Saat fitur "Find Watch" / "Temukan Perangkat" ditekan di aplikasi Chronos atau ESPBridge:
+  - **Dering Bell Nyaring Maksimal**: Speaker MAX98357A (3W) membunyikan sintesis nada bell ganda (*Ding-Dong!* nada tinggi 2048 Hz & 1706 Hz) pada volume digital 100% secara berulang tanpa jeda.
+  - **Alarm Getar Berkelanjutan**: Motor getar aktif berdenyut (350ms ON, 250ms OFF).
+  - **Layar Siaga Khusus**: OLED menampilkan popup `CARI PERANGKAT - Panggilan dari Chronos`.
+  - **Penghentian Cepat**: Tekan tombol fisik **GPIO 3** sekali untuk seketika mematikan suara dering dan getaran (*dismiss*).
 - **6 Layar OLED SSD1306 (128x64)**:
   1. **Home Screen**: Jam digital tersinkronisasi (WIB/UTC+7), indikator koneksi ponsel, jenis sinyal (WiFi/4G/5G), cuaca lokal & suhu, serta persentase baterai HP & status pengisian daya (grafis bar baterai).
   2. **Layar Notifikasi Chat/Pesan**: Menampilkan pesan masuk dari WhatsApp, Telegram, SMS, Gmail, Slack, dll. (termasuk nama pengirim, preview isi pesan, dan waktu masuk - aktif 7 detik).
@@ -242,6 +250,7 @@ Untuk memberikan kontrol instan dan ergonomis, firmware mengadopsi skema dua tom
 | Speaker 3W 4Ω | Audio output | Rp 10.000 | ke MAX98357A |
 | Push Button 1 | Tombol Utama (Chat, Stop 0ms, Mode Switch, Hold Menu) | Rp 1.000 | GPIO3 |
 | Push Button 2 | Tombol Hands-Free (Toggle Auto-Listen, Hold 5s Reset SSID) | Rp 1.000 | GPIO2 |
+| Motor Getar / Buzzer | Haptic notifikasi & alarm temukan perangkat (opsional) | Rp 3.000 | GPIO20 |
 | SSD1306 OLED | Display 128x64 (opsional) | Rp 25.000 | GPIO0(SDA), GPIO10(SCL) |
 
 ### 5.2 Wiring Diagram
@@ -923,7 +932,9 @@ Mengakhiri sesi obrolan secara instan dan kembali ke status siaga:
     │ ◄──────────────── Data Cuaca & Suhu Kota ──────────┤
     ├─ Tampilkan Home Screen (Jam, Baterai, Cuaca)       │
     │                                                    │
-    │ ◄──────────────── Notifikasi Masuk (WhatsApp) ─────┤ (Chat muncul 7 detik)
+    │ ◄──────────────── Notifikasi Masuk (WhatsApp) ─────┤ (Chat muncul 7s + Getar 2x)
+    │ ◄──────────────── Temukan Perangkat (Find Watch) ──┤ (Bell Ding-Dong nyaring + Getar alarm)
+    │ ───── Tekan Tombol GPIO3 Stop Bell ───────────────┤ (Hening & kembali normal)
     │ ◄──────────────── Navigasi Google Maps Live ───────┤ (Arrow manuver & jarak)
 ```
 

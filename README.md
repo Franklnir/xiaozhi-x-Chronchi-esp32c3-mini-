@@ -148,6 +148,8 @@ ESP32-C3 is constrained to ~400KB SRAM. In Chronchi mode, Wi-Fi, audio, and Wake
 
 - **Android Companion App**: Pair with **Chronos** or **ESPBridge** app (`Chronchi-XXYY`).
 - **Secure Pairing**: Displays a 6-digit numeric comparison code on OLED; press GPIO 3 to confirm.
+- **Haptic Vibration on Notifications**: Motor getar (GPIO 20) otomatis bergetar 2x saat notifikasi pesan masuk (WhatsApp, Telegram, dll.).
+- **Find My Device (Temukan Perangkat) Bell Ringing**: Saat fitur *Find Watch* dipicu dari Chronos, speaker MAX98357A (3W) berdering nyaring maksimal seperti dentang bell (*Ding-Dong!* 2048Hz) disertai getaran berulang. Tekan tombol **GPIO 3** sekali untuk menghentikan dering bell seketika.
 - **6 OLED SSD1306 Screens**:
   1. **Home Screen**: Synchronized clock (WIB/UTC+7), phone battery bar, signal level (4G/5G/WiFi), and local weather/temperature.
   2. **Notification Screen**: Live alerts from WhatsApp, Telegram, SMS, Gmail, Slack (sender name + message preview, active for 7s).

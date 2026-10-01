@@ -1,3 +1,4 @@
+#include "chronchi_alert.h"
 #include "chronchi_protocol.h"
 
 #include <cJSON.h>

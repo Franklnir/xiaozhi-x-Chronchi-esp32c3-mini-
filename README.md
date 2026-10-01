@@ -93,29 +93,68 @@ idf.py set-target esp32c3
 idf.py build flash monitor
 ```
 
-## Usage
+## Usage & Operational Guide
 
-### First Boot - WiFi Setup
+### 1. First Boot & Web Config Portal (192.168.4.1)
 
-1. Power on the device
-2. **Click the button** during startup (within 5 seconds)
-3. Connect to the WiFi hotspot: `Xiaozhi-XXXX`
-4. Open http://192.168.4.1 in browser
-5. Enter your WiFi credentials
-6. Device will restart and connect
+1. Power on the device.
+2. If Wi-Fi is not yet configured (or after reset), the device starts a setup AP hotspot: `Xiaozhi-XXXX`.
+3. Connect your smartphone/PC to the hotspot and navigate to **`http://192.168.4.1`**.
+4. **Portal Configuration Options**:
+   - **Wi-Fi Settings**: Select SSID and enter password (supports multi-SSID up to 10 networks).
+   - **Wake Word Dropdown**:
+     - `Hi Jason` (`hijason`) - **Default**: Highly optimized for clear detection and low false wake-up.
+     - `Hi Lexin` (`hilexin`): Standard Espressif ESP-SR model.
+     - `Hi ESP` (`hiesp`): Short activation keyword.
+     - `Ni Hao Xiaozhi` (`nihaoxiaozhi`): Original Mandarin model.
+   - **OLED Display Mode**: Choose between `Classic` (clean text) or `Animated` (expressive faces).
+   - **Wi-Fi TX Power**: Select transmission power from 2 dBm to 20 dBm for optimal battery life vs. signal range.
+5. Save settings; the device automatically saves to NVS and reboots to connect.
 
-### Talking to AI
+### 2. Physical Button Controls (Dual-Button Setup)
 
-1. **Hold the button** and speak
-2. **Release the button** when done
-3. Wait for AI response
+- **GPIO 3 (Primary Multi-Function Button)**:
+  - **Short Click**: Talk to AI (Push-to-Talk) / Interrupt speaking AI / **Instant Stop (0ms)** for YouTube music playback.
+  - **Double Click (Fast 2x)**: **Instant Mode Switch** between **Xiaozhi AI** ↔ **Chronchi BLE** mode without entering menus.
+  - **Hold for 2.5s**: Open visual **`SELECT MODE`** menu on OLED. Release button, short-click to select mode (Xiaozhi / Chronchi), then hold for 2s to confirm and reboot.
+  - **Triple Click (in Chronchi mode)**: Clear saved Wi-Fi and reboot directly into Web Config portal.
+- **GPIO 2 (Secondary Button / Hands-Free & Safety Reset)**:
+  - **Short Click**: Toggle **Hands-Free Mode (ON / OFF)**. When active, AI continuously listens automatically. If idle for >12s, enters low-power standby; wake up by saying *"Hi Jason"*.
+  - **Hold for 5s**: **Hardware Hard Reset SSID** — immediately wipes Wi-Fi NVS credentials in emergency.
 
-### Reset Saved WiFi (SSID)
+### 3. Built-in Voice Commands
 
-1. Connect an optional button from **GPIO 2** to **GND**
-2. **Hold the button for 3 seconds**
-3. Device will clear saved WiFi credentials and reboot
-4. After reboot, device enters WiFi setup mode again
+- **Wi-Fi Reset with Two-Step Confirmation**:
+  - Say: *"reset wifi"*, *"hapus wifi"*, *"ganti wifi"*, or *"clear wifi"*.
+  - Device plays warning chime and displays: `Say: ya / konfirmasi reset wifi (15s)`.
+  - Confirm by saying *"ya"*, *"iya"*, or *"konfirmasi reset wifi"*; device clears NVS and reboots to `192.168.4.1`.
+  - Cancel anytime by saying *"batal reset wifi"* or waiting 15 seconds.
+- **Voice Mode Switch**:
+  - Say: *"pindah mode"*, *"ganti ke mode chronchi"*, or *"masuk mode chronchi"*.
+  - Smart negation filter ignores commands containing *"jangan"*, *"tidak"*, or *"batal"*.
+  - Reboots directly into the target mode.
+- **Offline Local Music**:
+  - Play: *"putar lagu"*, *"mainkan musik"*.
+  - Stop: *"stop lagu"*, *"berhenti musik"*.
+- **Standby & Conversation Exit**:
+  - Say: *"stop"*, *"udahan dulu"*, *"bye"*, or *"sampai jumpa"*.
+- **YouTube Adaptive Streaming**:
+  - Say: *"putar lagu [title] di youtube"*.
+  - Stop: Press **GPIO 3** once for **Instant Stop (0ms)**.
+
+### 4. Chronchi Mode (BLE Phone Companion via ESPBridge)
+
+ESP32-C3 is constrained to ~400KB SRAM. In Chronchi mode, Wi-Fi, audio, and WakeNet are completely shut down (**Mutual Exclusion**), and 100% of radio resources are dedicated to Bluetooth Low Energy (ESP-NimBLE).
+
+- **Android Companion App**: Pair with **Chronos** or **ESPBridge** app (`Chronchi-XXYY`).
+- **Secure Pairing**: Displays a 6-digit numeric comparison code on OLED; press GPIO 3 to confirm.
+- **6 OLED SSD1306 Screens**:
+  1. **Home Screen**: Synchronized clock (WIB/UTC+7), phone battery bar, signal level (4G/5G/WiFi), and local weather/temperature.
+  2. **Notification Screen**: Live alerts from WhatsApp, Telegram, SMS, Gmail, Slack (sender name + message preview, active for 7s).
+  3. **Financial & Order Screen**: E-wallet transactions (GoPay, OVO, DANA) and e-commerce parcel tracking (Shopee, Tokopedia, Grab).
+  4. **Turn-by-Turn Navigation**: Real-time Google Maps & Waze directions (maneuver arrows, distance to turn, street names, ETA).
+  5. **Device Status**: Firmware version and local battery monitor.
+  6. **BLE Wi-Fi Provisioning & BLE OTA**: Wireless firmware updates directly over Bluetooth Low Energy.
 
 ## Troubleshooting
 

@@ -10,9 +10,20 @@
 2. [Arsitektur Sistem](#2-arsitektur-sistem)
 3. [Teknologi yang Digunakan](#3-teknologi-yang-digunakan)
 4. [Fitur Utama](#4-fitur-utama)
+   - [4.1 Voice AI Conversation & Pilihan Wake Word](#41-voice-ai-conversation--pilihan-wake-word)
+   - [4.2 MCP Protocol (On-Device JSON-RPC 2.0)](#42-mcp-protocol-on-device-json-rpc-20)
+   - [4.3 YouTube Audio Streaming & Instant Stop](#43-youtube-audio-streaming--instant-stop)
+   - [4.4 Mode Chronchi (BLE Phone Companion via ESPBridge)](#44-mode-chronchi-ble-phone-companion-via-espbridge)
+   - [4.5 Portal Konfigurasi Web Wi-Fi (192.168.4.1)](#45-portal-konfigurasi-web-wi-fi-19216841)
+   - [4.6 Navigasi Tombol Fisik (Dual-Button Setup)](#46-navigasi-tombol-fisik-dual-button-setup)
+   - [4.7 Display System (SSD1306 OLED 128x64)](#47-display-system-ssd1306-oled-128x64)
+   - [4.8 Power Management](#48-power-management)
 5. [Komponen Hardware](#5-komponen-hardware)
 6. [Komponen Software](#6-komponen-software)
 7. [Protokol Komunikasi](#7-protokol-komunikasi)
+   - [7.1 WebSocket Protocol (Xiaozhi Cloud)](#71-websocket-protocol-xiaozhi-cloud)
+   - [7.2 HTTP Protocol (YouTube Streaming)](#72-http-protocol-youtube-streaming)
+   - [7.3 Protokol BLE ESPBridge V1 (Mode Chronchi)](#73-protokol-ble-espbridge-v1-mode-chronchi)
 8. [Audio Pipeline](#8-audio-pipeline)
 9. [YouTube Audio Streaming](#9-youtube-audio-streaming)
 10. [MCP Server (On-Device)](#10-mcp-server-on-device)
@@ -21,6 +32,11 @@
 13. [Struktur File dan Direktori](#13-struktur-file-dan-direktori)
 14. [Konfigurasi Pin dan Hardware](#14-konfigurasi-pin-dan-hardware)
 15. [Alur Kerja Lengkap](#15-alur-kerja-lengkap)
+   - [15.1 Boot Sequence](#151-boot-sequence)
+   - [15.2 AI Conversation Flow](#152-ai-conversation-flow)
+   - [15.3 YouTube Streaming Flow](#153-youtube-streaming-flow)
+   - [15.4 Perintah Suara Bawaan (Built-in Voice Commands)](#154-perintah-suara-bawaan-built-in-voice-commands)
+   - [15.5 Alur Kerja Mode Chronchi BLE & Companion App](#155-alur-kerja-mode-chronchi-ble--companion-app)
 16. [Daftar MCP Tools](#16-daftar-mcp-tools)
 17. [Error Handling dan Recovery](#17-error-handling-dan-recovery)
 18. [Power Management](#18-power-management)
@@ -137,42 +153,80 @@ ESP32 ← HTTP Chunked (Opus frames) ← Backend Custom
 
 ## 4. Fitur Utama
 
-### 4.1 Voice AI Conversation
-- Push-to-talk (tombol) atau hands-free (auto-listen)
-- Wake word detection ("Hi Lexin" / "Hi Jason")
-- Opus encoded audio bidirectional
-- STT (Speech-to-Text) di server, LLM response, TTS (Text-to-Speech) playback
+### 4.1 Voice AI Conversation & Pilihan Wake Word
+- **Push-to-Talk & Hands-Free**: Percakapan dapat dipicu via tombol utama (GPIO 3), tombol mode Hands-Free kontinu (GPIO 2), atau melalui deteksi kata bangun (Wake Word).
+- **On-Device Wake Word Engine (ESP-SR)**: Deteksi dilakukan secara offline tanpa koneksi cloud/internet menggunakan model WakeNet teroptimasi.
+- **Pilihan 4 Model Wake Word (Dapat Dipilih di Web Config)**:
+  - `hijason` ("Hi Jason") - **Default Firmware**: Paling responsif, tingkat akurasi tinggi dan minim false wake-up.
+  - `hilexin` ("Hi Lexin"): Kata bangun standar Espressif ESP-SR.
+  - `hiesp` ("Hi ESP"): Alternatif singkat untuk interaksi kilat.
+  - `nihaoxiaozhi` ("Ni Hao Xiaozhi"): Model asli bawaan XiaoZhi AI.
+- **Dynamic Standby OLED Display Hint**: Saat dalam keadaan siaga (standby), layar SSD1306 otomatis menampilkan petunjuk aktivasi kata bangun yang sedang aktif (contoh: `Standby, say: Hi Jason`).
+- **Cooldown & Debounce Logic**: Mencegah false trigger pasca AI selesai berbicara agar audio output speaker tidak memicu mikrofon kembali.
+- **Audio Full-Duplex / Opus**: Audio percakapan dua arah dikompresi dengan codec Opus (mono 24kHz/16kHz) untuk menghemat bandwidth dan menghasilkan latensi ultra-rendah.
 
-### 4.2 MCP Protocol (On-Device)
-- JSON-RPC 2.0 server berjalan di ESP32
-- `initialize`, `tools/list`, `tools/call` methods
-- Device capability discovery oleh server
-- Tool execution callbacks ke hardware
+### 4.2 MCP Protocol (On-Device JSON-RPC 2.0)
+- **JSON-RPC 2.0 Server On-Device**: Berjalan langsung di mikrokontroler ESP32-C3 via WebSocket.
+- **Standar MCP Methods**: Mendukung `initialize`, `tools/list`, dan `tools/call`.
+- **Capability Discovery**: Server cloud dapat mendeteksi hardware peripheral (volume speaker, level baterai, layar OLED, GPIO) secara otomatis.
+- **Hardware Callbacks**: Mengeksekusi aksi fisik langsung di mikrokontroler (pengaturan volume DAC, query ADC baterai, brightness layar).
 
-### 4.3 YouTube Audio Streaming
-- Voice command: "Putar Despacito" → MCP tool call → stream audio
-- HTTP polling untuk command delivery
-- HTTP chunked streaming untuk audio delivery
-- Adaptive bitrate (6k/8k/12k/16k) berdasarkan RSSI + free RAM
-- Buffer starvation detection dan automatic downshift
-- Ogg demuxing on-device, raw Opus frame playback
+### 4.3 YouTube Audio Streaming & Instant Stop
+- **Voice Trigger**: Perintah suara seperti *"Putar lagu [judul] di YouTube"* diteruskan melalui MCP tool call `play_youtube_song`.
+- **Chunked HTTP Streaming**: Audio di-stream dalam format Ogg Opus langsung dari backend proxy ke ESP32-C3 tanpa membebani RAM 400KB.
+- **Adaptive Bitrate Streaming**: Menyesuaikan bitrate secara dinamis (6kbps, 8kbps, 12kbps, 16kbps) berdasarkan kualitas sinyal Wi-Fi (RSSI) dan sisa Free Heap SRAM.
+- **Instant Stop (0ms)**: Menekan tombol GPIO 3 sekali akan langsung menghentikan streaming YouTube seketika (abort socket HTTP, flush queue audio, dan reset player) tanpa jeda server.
+- **OLED Track Info**: Menampilkan judul lagu yang sedang diputar di baris OLED SSD1306.
 
-### 4.4 Dual-Mode Operation
-- **Xiaozhi Mode**: Full AI conversation, WiFi, audio streaming
-- **Chronos/Mochi Mode**: BLE-based, low power
-- Mode switching via long-press button (GPIO3)
-- Mode disimpan di NVS (persistent across reboot)
+### 4.4 Mode Chronchi (BLE Phone Companion via ESPBridge)
+- **Arsitektur Mutual Exclusion (RAM ~400KB ESP32-C3)**:
+  ESP32-C3 memiliki keterbatasan RAM (~400KB SRAM). Mode Chronchi mematikan total Wi-Fi, audio pipeline I2S, WakeNet, dan WebSocket; seluruh resource radio dialihkan 100% ke Bluetooth Low Energy (ESP-NimBLE) ESPBridge V1 GATT.
+- **Companion App Android (Chronos / ESPBridge)**:
+  Terkoneksi via BLE dengan nama advertising `Chronchi-XXYY` (diambil dari MAC address). Mendukung numeric comparison pairing 6 digit di layar OLED untuk koneksi aman.
+- **6 Layar OLED SSD1306 (128x64)**:
+  1. **Home Screen**: Jam digital tersinkronisasi (WIB/UTC+7), indikator koneksi ponsel, jenis sinyal (WiFi/4G/5G), cuaca lokal & suhu, serta persentase baterai HP & status pengisian daya (grafis bar baterai).
+  2. **Layar Notifikasi Chat/Pesan**: Menampilkan pesan masuk dari WhatsApp, Telegram, SMS, Gmail, Slack, dll. (termasuk nama pengirim, preview isi pesan, dan waktu masuk - aktif 7 detik).
+  3. **Layar Notifikasi Finansial & Order**: Notifikasi e-wallet (GoPay, OVO, DANA - uang masuk/keluar) dan e-commerce (Shopee, Tokopedia, Grab - status pesanan: Dikonfirmasi, Dikemas, Dikirim, Dalam Perjalanan, Diterima).
+  4. **Layar Navigasi Turn-by-Turn**: Terintegrasi langsung dengan Google Maps & Waze dari ponsel Android (menampilkan simbol panah manuver: belok kiri/kanan, serong, putar balik, jarak ke belokan, nama jalan, dan sisa jarak ke tujuan).
+  5. **Layar Status Perangkat**: Menampilkan status memori, firmware version, dan level baterai lokal.
+  6. **BLE Wi-Fi Provisioning & BLE OTA**: Dukungan update firmware langsung lewat Bluetooth Low Energy via aplikasi pendamping.
 
-### 4.5 Display System
-- SSD1306 OLED 128x64 via I2C
-- Status display (connecting, listening, speaking)
-- Song title display saat YouTube streaming
-- Volume level, battery percentage
+### 4.5 Portal Konfigurasi Web Wi-Fi (192.168.4.1)
+- **SoftAP Hotspot Setup**: Saat perangkat baru dinyalakan atau setelah reset Wi-Fi, ESP32-C3 menyiarkan hotspot konfigurasi AP mandiri.
+- **Akses Web Browser**: Hubungkan smartphone/laptop ke hotspot dan buka browser di alamat `http://192.168.4.1`.
+- **Fitur Konfigurasi**:
+  - **Pilihan Wake Word Dropdown**: Pilih kata bangun aktif (`Hi Jason`, `Hi Lexin`, `Hi ESP`, `Ni Hao Xiaozhi`) yang langsung tersimpan di NVS (`wake_word`).
+  - **Pilihan Tampilan OLED**: Mode `Classic` (teks status bersih) atau `Animated` (emoji muka ekspresif).
+  - **Wi-Fi TX Power**: Pengaturan daya transmisi radio Wi-Fi (2 dBm s.d 20 dBm) untuk menstabilkan koneksi atau menghemat konsumsi arus baterai.
+  - **Multi-SSID Support**: Mampu menyimpan hingga 10 konfigurasi Wi-Fi dengan fallback otomatis jika jaringan utama terputus.
 
-### 4.6 Power Management
-- Auto power-off audio peripheral saat idle (30 detik)
-- Battery monitoring via ADC (single-cell Li-ion)
-- WiFi power save modes
+### 4.6 Navigasi Tombol Fisik (Dual-Button Setup)
+Untuk memberikan kontrol instan dan ergonomis, firmware mengadopsi skema dua tombol fisik:
+- **GPIO 3 (Tombol Utama / Multi-Function Button)**:
+  - **1x Klik Singkat (Short Press)**:
+    - *Mode Xiaozhi*: Memulai percakapan AI (Push-to-Talk) / Memotong pembicaraan AI (Interrupt TTS) / **Instant Stop (0ms)** pemutaran audio YouTube.
+    - *Mode Chronchi*: Dismiss notifikasi yang sedang aktif di layar OLED.
+  - **2x Klik Cepat (Double Click)**:
+    - **Instant Mode Switch**: Beralih langsung antara **Mode Xiaozhi AI** ↔ **Mode Chronchi BLE** tanpa harus membuka menu visual.
+  - **Tahan 2.5 Detik (Hold 2.5s)**:
+    - Membuka menu visual **`SELECT MODE`** di layar OLED SSD1306. Lepaskan tombol, klik singkat untuk berpindah pilihan (Xiaozhi / Chronchi), lalu tahan selama 2 detik untuk konfirmasi pilihan dan reboot.
+  - **3x Klik Cepat di Mode Chronchi**:
+    - Menghapus kredensial Wi-Fi tersimpan dan merestart perangkat ke mode Web Config Portal (`192.168.4.1`).
+- **GPIO 2 (Tombol Sekunder / Hands-Free & Safety Reset)**:
+  - **1x Klik Singkat**: Toggle Mode **Hands-Free (ON / OFF)**. Saat aktif, AI terus mendengarkan percakapan secara otomatis tanpa perlu menekan tombol lagi.
+  - **Tahan 5 Detik (Long Hold 5s)**: **Hardware Hard Reset SSID** — menghapus seluruh konfigurasi Wi-Fi di NVS secara instan untuk pemulihan darurat jika portal web tidak dapat diakses.
+
+### 4.7 Display System (SSD1306 OLED 128x64)
+- Panel OLED 0.96" SSD1306 resolusi 128x64 dot via I2C (SDA GPIO 0, SCL GPIO 10).
+- Visual status percakapan AI (Idle, Listening, Thinking, Speaking).
+- Tampilan petunjuk Wake Word dinamis saat standby (`Standby, say: Hi Jason`).
+- Judul lagu saat streaming YouTube berlangsung.
+- Tampilan grafis battery bar indikator level daya.
+
+### 4.8 Power Management
+- Auto power-off audio peripheral saat idle (30 detik).
+- Battery monitoring via ADC GPIO 1 (voltage divider single-cell Li-ion).
+- Wi-Fi Power Save mode (Modem Sleep) untuk efisiensi konsumsi daya saat standby.
 
 ---
 
@@ -186,7 +240,8 @@ ESP32 ← HTTP Chunked (Opus frames) ← Backend Custom
 | INMP441 | I2S MEMS Microphone | Rp 25.000 | GPIO4(SD), GPIO5(SCK), GPIO6(WS) |
 | MAX98357A | I2S Class D Amplifier (3W) | Rp 20.000 | GPIO7(DIN), GPIO5(BCLK), GPIO6(LRC) |
 | Speaker 3W 4Ω | Audio output | Rp 10.000 | ke MAX98357A |
-| Push Button | Mode/chat trigger | Rp 1.000 | GPIO3 |
+| Push Button 1 | Tombol Utama (Chat, Stop 0ms, Mode Switch, Hold Menu) | Rp 1.000 | GPIO3 |
+| Push Button 2 | Tombol Hands-Free (Toggle Auto-Listen, Hold 5s Reset SSID) | Rp 1.000 | GPIO2 |
 | SSD1306 OLED | Display 128x64 (opsional) | Rp 25.000 | GPIO0(SDA), GPIO10(SCL) |
 
 ### 5.2 Wiring Diagram
@@ -371,6 +426,39 @@ Response: HTTP/1.1 200 OK
 
           [binary Opus frames in Ogg container, continuous]
 ```
+
+### 7.3 Protokol BLE ESPBridge V1 (Mode Chronchi)
+
+Mode Chronchi menggunakan protokol framed JSON terenkripsi melalui GATT Bluetooth Low Energy (ESP-NimBLE):
+
+**Spesifikasi Koneksi BLE:**
+- **Device Name**: `Chronchi-XXYY` (XXYY = 2 byte terakhir MAC address)
+- **GATT Service UUID**: `7c9e0001-6f2f-4d4d-9f25-0d7fd4f0a001`
+- **RX Characteristic**: `7c9e0002-6f2f-4d4d-9f25-0d7fd4f0a001` (Phone → ESP32)
+- **TX Characteristic**: `7c9e0003-6f2f-4d4d-9f25-0d7fd4f0a001` (ESP32 → Phone)
+- **MTU Default**: 247 byte (Mendukung rekonstruksi multi-fragment hingga JSON 768 byte)
+- **Handshake Status**: `ESPBridge V1 handshake: READY`
+
+**Daftar Tipe Paket (Phone → ESP32):**
+| ID Paket | Tipe | Fungsi | Contoh Payload |
+|---|---|---|---|
+| `0x01` | `TimeSync` | Sinkronisasi waktu epoch & UTC offset HP (WIB UTC+7 = 420 menit) | `{"epochSeconds": 1727784000, "utcOffsetMinutes": 420}` |
+| `0x02` | `PhoneStatus` | Status level daya baterai dan charging ponsel | `{"batteryLevel": 85, "charging": false}` |
+| `0x03` | `NetworkStatus`| Tipe jaringan (WiFi/Cellular), generasi (4G/5G), & sinyal (0-4) | `{"transport": "cellular", "generation": "4G", "signalLevel": 4}` |
+| `0x04` | `Weather` | Cuaca terkini dan suhu kota lokal | `{"temperatureC": 29, "location": "Jakarta"}` |
+| `0x05` | `Notification` | Notifikasi masuk (WhatsApp, Telegram, SMS, Email, Bank, Order) | `{"category": "MESSAGE", "sourceApp": "WhatsApp", "primaryText": "Budi", "secondaryText": "Otw ya bro"}` |
+| `0x06` | `Navigation` | Data panduan arah turn-by-turn Google Maps / Waze | `{"active": true, "maneuver": "TURN_LEFT", "distanceText": "200 m", "roadName": "Jl. Sudirman"}` |
+| `0x07` | `Location` | Koordinat GPS ponsel (latitude & longitude) | `{"latitude": -6.2088, "longitude": 106.8456}` |
+| `0x08` | `Command` | Perintah dismiss layar notifikasi / stop navigasi | `{"action": "DISMISS"}` |
+| `0x09` | `DeviceStatus`| Query capability perangkat ESP32 | `{}` |
+
+**Prioritas Render Layar di OLED:**
+1. Navigasi Google Maps (Aktif terus selama rute berjalan / `active=true`)
+2. Notifikasi Pembayaran / Finansial (Timeout: 8 detik)
+3. Notifikasi Status Pesanan E-Commerce (Timeout: 7 detik)
+4. Pesan Chat WhatsApp / Telegram (Timeout: 7 detik)
+5. Notifikasi Sistem (Timeout: 5 detik)
+6. Layar Utama / Home Clock (Default background)
 
 ---
 
@@ -770,6 +858,85 @@ Voltage = ADC_reading × 2 × (3.3V / 4095)
 10. Monitor buffer health, downshift jika perlu
 11. Selesai atau user abort → POST /status {stopped}
 ```
+
+### 15.4 Perintah Suara Bawaan (Built-in Voice Commands)
+
+Selain percakapan umum berbasis LLM di server, firmware ESP32-C3 dilengkapi dengan deteksi perintah suara lokal/hybrid terprogram untuk kontrol hardware instan:
+
+#### A. Reset Wi-Fi dengan Two-Step Safety Confirmation
+Mencegah terhapusnya kredensial Wi-Fi secara tidak sengaja melalui dialog konfirmasi dua arah:
+1. **Trigger Perintah**: Katakan salah satu frasa pemicu:
+   - *"reset wifi"*, *"hapus wifi"*, *"ganti wifi"*, *"ubah ssid"*, *"clear wifi"*, *"forget wifi"*
+2. **Respon ESP32**:
+   - Membunyikan nada peringatan (`OGG_EXCLAMATION`).
+   - Layar OLED menampilkan petunjuk: `Say: ya / konfirmasi reset wifi (15s)`.
+   - Firmware membuka jendela konfirmasi aman selama 15 detik (`kWifiResetConfirmWindowUs`).
+3. **Eksekusi Konfirmasi**:
+   - Jika user menjawab: *"ya"*, *"iya"*, *"konfirmasi reset wifi"*, *"ya hapus wifi"*, atau *"reset wifi sekarang"*:
+     - ESP32 menghapus namespace NVS `wifi` hingga bersih.
+     - Layar OLED menampilkan: `SSID reset, rebooting...`.
+     - ESP32 reboot otomatis dan langsung masuk ke mode Web Config Portal AP (`192.168.4.1`).
+4. **Pembatalan Aman**:
+   - Jika user menjawab *"batal reset wifi"* / *"cancel reset wifi"*, atau diam melewati batas waktu 15 detik, proses reset otomatis dibatalkan dan OLED menampilkan `WiFi reset cancelled`.
+
+#### B. Pindah Mode via Perintah Suara
+User dapat berpindah mode operasional secara hands-free hanya dengan berbicara:
+- **Perintah Pindah ke Chronchi**: *"pindah mode"*, *"ganti mode"*, *"switch mode"*, *"pindah ke chronchi"*, *"masuk mode chronchi"*.
+- **Proteksi Negasi Cerdas**: Firmware otomatis mengabaikan perintah jika terdapat kata negasi seperti: *"jangan"*, *"tidak"*, *"gak"*, *"nggak"*, atau *"batal"*.
+- **Aksi**: NVS `boot_mode` disetel ke `Chronchi`, OLED menampilkan `Pindah ke Chronchi...`, dan perangkat reboot otomatis ke mode BLE.
+- **Kembali ke Xiaozhi**: Perintah *"pindah ke xiaozhi"*, *"mode awal"*, *"mode normal"* akan menyetel kembali ke mode Xiaozhi AI.
+
+#### C. Kontrol Musik Lokal (Offline)
+Memutar file audio offline tersimpan di partisi flash SPIFFS tanpa internet:
+- **Perintah Putar**: *"putar lagu"*, *"mainkan musik"*.
+- **Perintah Stop**: *"stop lagu"*, *"berhenti musik"*, *"matikan lagu"*.
+
+#### D. Kontrol Standby & Penghentian Obrolan
+Mengakhiri sesi obrolan secara instan dan kembali ke status siaga:
+- **Perintah**: *"stop"*, *"udahan dulu"*, *"bye"*, *"byee"*, *"sampai jumpa"*, *"sampai nanti"*.
+
+#### E. Kontrol Volume & Status Baterai (MCP Protocol)
+- **Perintah Volume**: *"atur volume ke 80%"*, *"besarkan suara"*, *"kecilkan volume"*.
+- **Perintah Status**: *"berapa sisa baterai"*, *"cek daya tahan baterai"*, *"status perangkat"*.
+
+#### F. Streaming YouTube Audio & Instant Stop (0ms)
+- **Perintah Putar**: *"putar lagu [judul] di youtube"*.
+- **Instant Stop (0ms)**: Selama audio YouTube diputar, menekan tombol fisik **GPIO 3** sekali akan langsung menghentikan streaming secara lokal seketika tanpa latency server.
+
+---
+
+### 15.5 Alur Kerja Mode Chronchi BLE & Companion App
+
+```
+[ESP32-C3]                                     [Smartphone Android]
+    │                                                    │
+    ├─ Boot Mode Chronchi                                │
+    ├─ Wi-Fi & I2S OFF, NimBLE ON                        │
+    ├─ Advertising: Chronchi-XXYY                        │
+    │ ◄──────────────── Scan & Connect BLE ──────────────┤ (App Chronos/ESPBridge)
+    ├─ Tampilkan Kode 6-Digit di OLED                    │
+    ├─ Tekan GPIO3 Konfirmasi Pairing ─────────────────► │
+    │ ◄──────────────── Handshake ESPBridge V1 ──────────┤
+    ├─ Kirim ACK -> Status READY ──────────────────────► │
+    │ ◄──────────────── Sinkronisasi Jam (TimeSync) ─────┤
+    │ ◄──────────────── Status Baterai & Sinyal ─────────┤
+    │ ◄──────────────── Data Cuaca & Suhu Kota ──────────┤
+    ├─ Tampilkan Home Screen (Jam, Baterai, Cuaca)       │
+    │                                                    │
+    │ ◄──────────────── Notifikasi Masuk (WhatsApp) ─────┤ (Chat muncul 7 detik)
+    │ ◄──────────────── Navigasi Google Maps Live ───────┤ (Arrow manuver & jarak)
+```
+
+1. **Inisialisasi BLE**: ESP32-C3 boot ke mode Chronchi → Wi-Fi & I2S dinonaktifkan → ESP-NimBLE mengiklankan UUID Service ESPBridge.
+2. **Pairing**: Ponsel Android membuka aplikasi Chronos / ESPBridge → scan BLE → pilih `Chronchi-XXYY` → kode 6 digit tampil di OLED → user tekan GPIO 3 untuk konfirmasi.
+3. **Handshake**: Aplikasi mengirim handshake V1 → ESP32 membalas ACK → status menjadi `READY`.
+4. **Sinkronisasi Atomik**:
+   - Jam lokal disetel dari paket `TimeSync` (format WIB UTC+7).
+   - Ikon baterai HP dan kekuatan sinyal di-update dari `PhoneStatus` dan `NetworkStatus`.
+   - Suhu dan cuaca kota diperbarui dari paket `Weather`.
+5. **Event Real-Time**:
+   - **Pesan Masuk**: WhatsApp/Telegram masuk → OLED menampilkan nama pengirim dan isi chat selama 7 detik.
+   - **Navigasi Turn-by-Turn**: Google Maps aktif → layar OLED berganti menampilkan tanda panah belokan dan jarak secara kontinu hingga tujuan tercapai.
 
 ---
 

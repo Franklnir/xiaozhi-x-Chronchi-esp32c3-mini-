@@ -5,6 +5,7 @@
 #include "boards/esp32c3-inmp441/shared_oled.h"
 #include "display/display.h"
 #include "mode/mode_store.h"
+#include "settings.h"
 
 #include <esp_heap_caps.h>
 #include <esp_log.h>
@@ -39,41 +40,35 @@ void ChronchiMode::Initialize() {
 
     display_ = GetEsp32c3SharedOled(true);
     mode_selector_ = std::make_unique<ModeSelector>(
-        BootMode::Chronchi, display_, [this]() {
+        BootMode::Chronchi, display_,
+        [this]() {
             if (ChronchiAlert::GetInstance().IsAlarmActive()) {
                 ESP_LOGI(kTag, "Dismissing active find alarm via button press");
                 ChronchiAlert::GetInstance().StopAlert();
                 state_.DismissTransient();
                 return;
             }
+            if (ble_.GetChronosProtocol().IsCameraReady()) {
+                ESP_LOGI(kTag, "Camera ready: button press triggering photo capture");
+                ble_.TriggerCameraCapture();
+                state_.ShowSystem("KAMERA", "Foto diambil!");
+                return;
+            }
             if (!ble_.ConfirmPairing()) state_.DismissTransient();
+        },
+        [this]() {
+            ESP_LOGI(kTag, "GPIO 3 Long Press in Chronchi mode -> Switching to Xiaozhi WiFi Config Mode");
+            Settings settings("system", true);
+            settings.SetInt("force_wifi_cfg", 1);
+            ModeStore::Save(BootMode::Xiaozhi);
+            if (display_ != nullptr) {
+                display_->ShowNotification("WiFi Config...", 2000);
+            }
+            vTaskDelay(pdMS_TO_TICKS(600));
+            esp_restart();
         });
     button_.OnPressDown([this]() {
         mode_selector_->OnPressDown();
-
-        // Triple-click detection for clearing WiFi
-        int64_t now = esp_timer_get_time();
-        if (now - last_click_us_ < kTripleClickWindowUs) {
-            click_count_++;
-        } else {
-            click_count_ = 1;
-        }
-        last_click_us_ = now;
-
-        if (click_count_ >= 3) {
-            click_count_ = 0;
-            ESP_LOGI(kTag, "Triple-click detected! Clearing WiFi config...");
-            nvs_handle_t handle;
-            esp_err_t err = nvs_open("wifi", NVS_READWRITE, &handle);
-            if (err == ESP_OK) {
-                nvs_erase_all(handle);
-                nvs_commit(handle);
-                nvs_close(handle);
-                ESP_LOGI(kTag, "WiFi config cleared from NVS");
-                state_.ShowSystem("WIFI", "Cleared!");
-                Render(state_.Snapshot());
-            }
-        }
     });
     button_.OnPressUp([this]() { mode_selector_->OnPressUp(); });
 

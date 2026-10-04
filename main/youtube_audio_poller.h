@@ -18,7 +18,12 @@ public:
     static std::string GetBaseUrl();
     static std::string GetStreamUrl();
     void Stop();
-    bool IsPlaying() const { return is_playing_.load(); }
+    bool IsPlaying() const {
+        return is_playing_.load() || play_requested_.load() || query_requested_.load() ||
+               trigger_requested_.load() || is_fetching_.load();
+    }
+    std::string GetCurrentTitle() const;
+    std::string GetCurrentVideoId() const;
     void Abort();
     void TriggerFetch();
     void PlaySong(const std::string& video_id, const std::string& title);
@@ -42,10 +47,13 @@ private:
     std::atomic<bool> trigger_requested_{false};
     std::atomic<bool> play_requested_{false};
     std::atomic<bool> query_requested_{false};
+    std::atomic<bool> is_fetching_{false};
     std::mutex song_mutex_;
     std::string pending_video_id_;
     std::string pending_title_;
     std::string pending_query_;
+    std::string current_video_id_;
+    std::string current_title_;
 
     std::mutex http_mutex_;
     Http* active_http_ = nullptr;

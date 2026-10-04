@@ -73,9 +73,16 @@ bool EspWakeWord::CreateWakeNetLocked() {
         ESP_LOGE(TAG, "No WakeNet interface for model: %s", model_name);
         return false;
     }
+    size_t free_heap = heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    size_t largest_block = heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
     ESP_LOGI(TAG, "Creating WakeNet (free=%u, largest=%u)",
-             static_cast<unsigned>(heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT)),
-             static_cast<unsigned>(heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT)));
+             static_cast<unsigned>(free_heap),
+             static_cast<unsigned>(largest_block));
+    if (free_heap < 35000 || largest_block < 8192) {
+        ESP_LOGW(TAG, "Insufficient contiguous SRAM for WakeNet (free=%u, largest=%u, need free>=35000, largest>=8192); skipping to avoid crash",
+                 static_cast<unsigned>(free_heap), static_cast<unsigned>(largest_block));
+        return false;
+    }
     wakenet_data_ = wakenet_iface_->create(model_name, DET_MODE_90);
     if (wakenet_data_ == nullptr) {
         ESP_LOGE(TAG, "Failed to create WakeNet model: %s", model_name);
@@ -168,6 +175,13 @@ void EspWakeWord::Feed(const std::vector<int16_t>& data) {
         last_detected_wake_word_ = wakenet_iface_->get_word_name(wakenet_data_, res);
         ESP_LOGI(TAG, ">>> Wake word triggered: %s (id=%d) <<<", last_detected_wake_word_.c_str(), res);
         running_ = false;
+
+        // Immediately release WakeNet runtime to free ~21KB SRAM for MQTT TLS and audio buffers
+        wakenet_iface_->destroy(wakenet_data_);
+        wakenet_data_ = nullptr;
+        ESP_LOGI(TAG, "Released WakeNet runtime immediately on wake-up (free=%u, largest=%u)",
+                 static_cast<unsigned>(heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT)),
+                 static_cast<unsigned>(heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT)));
 
         if (wake_word_detected_callback_) {
             wake_word_detected_callback_(last_detected_wake_word_);

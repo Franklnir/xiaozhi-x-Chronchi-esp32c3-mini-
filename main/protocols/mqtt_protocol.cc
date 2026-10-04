@@ -2,6 +2,7 @@
 #include "board.h"
 #include "application.h"
 #include "settings.h"
+#include "youtube_audio_poller.h"
 
 #include <esp_log.h>
 #include <cstring>
@@ -63,6 +64,14 @@ bool MqttProtocol::Start() {
 }
 
 bool MqttProtocol::StartMqttClient(bool report_error) {
+    if (YouTubeAudioPoller::GetInstance().IsPlaying()) {
+        ESP_LOGI(TAG, "Postponing MQTT connect/reconnect: music is currently playing");
+        if (reconnect_timer_ != nullptr) {
+            esp_timer_start_once(reconnect_timer_, 10000 * 1000);
+        }
+        return false;
+    }
+
     if (mqtt_ != nullptr) {
         ESP_LOGW(TAG, "Mqtt client already started");
         mqtt_.reset();
@@ -73,7 +82,7 @@ bool MqttProtocol::StartMqttClient(bool report_error) {
     auto client_id = settings.GetString("client_id");
     auto username = settings.GetString("username");
     auto password = settings.GetString("password");
-    int keepalive_interval = settings.GetInt("keepalive", 240);
+    int keepalive_interval = settings.GetInt("keepalive", 60);
     publish_topic_ = settings.GetString("publish_topic");
 
     if (endpoint.empty()) {

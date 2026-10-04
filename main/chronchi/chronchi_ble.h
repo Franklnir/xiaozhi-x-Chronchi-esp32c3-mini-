@@ -22,6 +22,11 @@ public:
     bool ConfirmPairing();
     void Stop();  // Deinit BLE and free resources
 
+    // Chronos companion app controls
+    bool TriggerCameraCapture();
+    bool SendMusicControl(uint16_t command);
+    bool FindPhone(bool state);
+
     // Access protocol for notification callback registration
     ChronchiProtocol& GetProtocol() { return protocol_; }
     ChronosProtocol& GetChronosProtocol() { return chronos_protocol_; }

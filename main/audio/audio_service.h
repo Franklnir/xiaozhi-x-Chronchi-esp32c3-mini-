@@ -39,7 +39,7 @@
 #define MAX_ENCODE_TASKS_IN_QUEUE 2
 #if CONFIG_IDF_TARGET_ESP32C3
 #define MAX_PLAYBACK_TASKS_IN_QUEUE 1
-#define MAX_DECODE_PACKETS_IN_QUEUE 18
+#define MAX_DECODE_PACKETS_IN_QUEUE 8
 #define MAX_SEND_PACKETS_IN_QUEUE 3
 #else
 #define MAX_PLAYBACK_TASKS_IN_QUEUE 2
@@ -99,6 +99,7 @@ public:
     const std::string& GetLastWakeWord() const;
     bool IsVoiceDetected() const { return voice_detected_; }
     bool IsIdle();
+    bool IsPlaybackIdle();
     bool IsWakeWordRunning() const { return xEventGroupGetBits(event_group_) & AS_EVENT_WAKE_WORD_RUNNING; }
     bool IsAudioProcessorRunning() const { return xEventGroupGetBits(event_group_) & AS_EVENT_AUDIO_PROCESSOR_RUNNING; }
     bool IsAudioTesting() const { return xEventGroupGetBits(event_group_) & AS_EVENT_AUDIO_TESTING_RUNNING; }

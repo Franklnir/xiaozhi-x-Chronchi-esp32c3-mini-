@@ -18,7 +18,8 @@
 enum class FaceState {
     Idle,
     Listening,
-    Speaking
+    Speaking,
+    Music
 };
 
 struct ChronchiScreen;

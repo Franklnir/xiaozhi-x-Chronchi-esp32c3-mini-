@@ -7,6 +7,7 @@
 #include "assets/lang_config.h"
 #include "mode/mode_store.h"
 #include "mode/boot_mode.h"
+#include "youtube_audio_poller.h"
 
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
@@ -92,6 +93,15 @@ void WifiBoard::StartNetwork() {
 }
 
 void WifiBoard::TryWifiConnect() {
+    Settings settings("system", true);
+    if (settings.GetInt("force_wifi_cfg", 0) == 1) {
+        ESP_LOGI(TAG, "force_wifi_cfg flag detected, entering WiFi config mode directly");
+        settings.SetInt("force_wifi_cfg", 0);
+        vTaskDelay(pdMS_TO_TICKS(1000));
+        StartWifiConfigMode();
+        return;
+    }
+
     auto& ssid_manager = SsidManager::GetInstance();
     bool have_ssid = !ssid_manager.GetSsidList().empty();
 
@@ -156,15 +166,17 @@ void WifiBoard::SetNetworkEventCallback(NetworkEventCallback callback) {
 
 void WifiBoard::OnWifiConnectTimeout(void* arg) {
     auto* board = static_cast<WifiBoard*>(arg);
+    auto& ssid_manager = SsidManager::GetInstance();
+    bool have_ssid = !ssid_manager.GetSsidList().empty();
 
     board->connect_retry_count_++;
-    if (board->connect_retry_count_ < MAX_CONNECT_RETRIES) {
-        ESP_LOGW(TAG, "WiFi connection timeout, retrying (%d/%d)...", board->connect_retry_count_, MAX_CONNECT_RETRIES);
+    if (have_ssid) {
+        ESP_LOGW(TAG, "WiFi connection timeout, retrying (%d)...", board->connect_retry_count_);
         WifiManager::GetInstance().StopStation();
-        vTaskDelay(pdMS_TO_TICKS(1000));
+        vTaskDelay(pdMS_TO_TICKS(1500));
         board->TryWifiConnect();
     } else {
-        ESP_LOGW(TAG, "WiFi connection timeout after %d retries, entering config mode", MAX_CONNECT_RETRIES);
+        ESP_LOGW(TAG, "No saved SSID found, entering config mode");
         board->connect_retry_count_ = 0;
         WifiManager::GetInstance().StopStation();
         board->StartWifiConfigMode();
@@ -214,6 +226,11 @@ void WifiBoard::StartWifiConfigMode() {
 
 void WifiBoard::EnterWifiConfigMode() {
     ESP_LOGI(TAG, "EnterWifiConfigMode called");
+    if (in_config_mode_ || Application::GetInstance().GetDeviceState() == kDeviceStateWifiConfiguring) {
+        ESP_LOGI(TAG, "Already in WiFi config mode");
+        return;
+    }
+
     GetDisplay()->ShowNotification(Lang::Strings::ENTERING_WIFI_CONFIG_MODE);
 
     auto& app = Application::GetInstance();
@@ -226,8 +243,8 @@ void WifiBoard::EnterWifiConfigMode() {
         xTaskCreate([](void* arg) {
             auto* board = static_cast<WifiBoard*>(arg);
 
-            // Wait for 1 second to allow speaking to finish gracefully
-            vTaskDelay(pdMS_TO_TICKS(1000));
+            // Wait for 500ms to allow speaking to finish gracefully
+            vTaskDelay(pdMS_TO_TICKS(500));
 
             // Stop any ongoing connection attempt
             esp_timer_stop(board->connect_timer_);
@@ -238,11 +255,6 @@ void WifiBoard::EnterWifiConfigMode() {
 
             vTaskDelete(NULL);
         }, "wifi_cfg_delay", 4096, this, 2, NULL);
-        return;
-    }
-
-    if (state != kDeviceStateStarting) {
-        ESP_LOGE(TAG, "EnterWifiConfigMode called but device state is not starting or speaking, device state: %d", state);
         return;
     }
 
@@ -322,6 +334,12 @@ std::string WifiBoard::GetDeviceStatusJson() {
     auto audio_speaker = cJSON_CreateObject();
     if (auto codec = board.GetAudioCodec()) {
         cJSON_AddNumberToObject(audio_speaker, "volume", codec->output_volume());
+    }
+    auto& yt = YouTubeAudioPoller::GetInstance();
+    cJSON_AddBoolToObject(audio_speaker, "is_playing_music", yt.IsPlaying());
+    if (yt.IsPlaying()) {
+        cJSON_AddStringToObject(audio_speaker, "song_title", yt.GetCurrentTitle().c_str());
+        cJSON_AddStringToObject(audio_speaker, "song_video_id", yt.GetCurrentVideoId().c_str());
     }
     cJSON_AddItemToObject(root, "audio_speaker", audio_speaker);
 

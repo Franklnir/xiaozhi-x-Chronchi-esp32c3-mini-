@@ -152,21 +152,11 @@ private:
                 ESP_LOGI(TAG, "GPIO 3 pressed while playing YouTube -> Instant Abort (0 ms)!");
                 youtube_interrupted_ = true;
                 YouTubeAudioPoller::GetInstance().Abort();
-                auto display = GetDisplay();
-                if (display != nullptr) {
-                    display->ShowNotification("Lagu dihentikan", 2000);
-                }
-                return;
             }
-            youtube_interrupted_ = false;
             mode_selector_->OnPressDown();
         });
         boot_button_.OnPressUp([this]() {
             boot_button_pressed_ = false;
-            if (youtube_interrupted_) {
-                youtube_interrupted_ = false;
-                return;
-            }
             mode_selector_->OnPressUp();
         });
 
@@ -198,6 +188,9 @@ private:
 
     void TryStartHandsFreeListening() {
 #if HANDS_FREE_AUTO_LISTEN
+        if (YouTubeAudioPoller::GetInstance().IsPlaying()) {
+            return;
+        }
         auto& app = Application::GetInstance();
         if (!hands_free_enabled_ || app.IsStandbyActive()) {
             // OFF means truly OFF:
@@ -363,21 +356,25 @@ public:
             mode_selector_ = std::make_unique<ModeSelector>(
                 BootMode::Xiaozhi, GetDisplay(),
                 [this]() {
+                    if (youtube_interrupted_) {
+                        youtube_interrupted_ = false;
+                        auto display = GetDisplay();
+                        if (display != nullptr) {
+                            display->ShowNotification("Lagu dihentikan", 2000);
+                        }
+                        return;
+                    }
                     auto& app = Application::GetInstance();
                     last_voice_activity_us_ = esp_timer_get_time();
                     wait_for_wake_word_ = false;
-                    if (app.GetDeviceState() == kDeviceStateStarting) {
-                        EnterWifiConfigMode();
-                    } else {
+                    if (app.GetDeviceState() != kDeviceStateStarting) {
                         app.ToggleChatState();
                     }
                 },
-                []() {
-                    auto& app = Application::GetInstance();
-                    auto state = app.GetDeviceState();
-                    if (state == kDeviceStateListening || state == kDeviceStateSpeaking) {
-                        app.ToggleChatState();
-                    }
+                [this]() {
+                    youtube_interrupted_ = false;
+                    ESP_LOGI(TAG, "GPIO 3 Long Press -> Entering WiFi Config Mode");
+                    EnterWifiConfigMode();
                 });
             InitializeButtons();
             InitializeHandsFreeMode();

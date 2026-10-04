@@ -75,6 +75,8 @@ struct ChronchiScreen {
     bool wifi = false;
     bool charging = false;
     bool battery_valid = false;
+    bool has_custom_icon = false;
+    uint8_t custom_icon[128] = {};
 };
 
 struct ChronchiSnapshot {

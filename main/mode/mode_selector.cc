@@ -12,17 +12,15 @@
 namespace {
 constexpr char kTag[] = "ModeButton";
 constexpr int64_t MsToUs(int ms) { return static_cast<int64_t>(ms) * 1000; }
-constexpr int kModeCount = 2;  // Xiaozhi, Chronchi
 }  // namespace
 
 ModeSelector::ModeSelector(BootMode current_mode, Display* display,
                            std::function<void()> short_click,
-                           std::function<void()> before_menu)
+                           std::function<void()> long_press)
     : current_mode_(current_mode),
-      selected_mode_(current_mode),
       display_(display),
       short_click_(std::move(short_click)),
-      before_menu_(std::move(before_menu)) {
+      long_press_(std::move(long_press)) {
     esp_timer_create_args_t timer_args = {};
     timer_args.callback = TimerCallback;
     timer_args.arg = this;
@@ -58,86 +56,63 @@ void ModeSelector::OnPressDown() {
 
     {
         std::lock_guard<std::mutex> lock(mutex_);
-        if (pressed_) {
+        if (switching_mode_ || pressed_) {
             return;
         }
 
-        // Detect fast double-click (second press down within window of first press release)
-        if (!menu_active_ && pending_single_click_) {
+        // Fast double-click: second press down within window of first press release
+        if (pending_single_click_) {
             const int64_t time_since_release_us = now - last_release_us_;
             if (time_since_release_us <= MsToUs(kDoubleClickWindowMs)) {
                 pending_single_click_ = false;
                 double_click = true;
                 target_mode = (current_mode_ == BootMode::Xiaozhi) ? BootMode::Chronchi : BootMode::Xiaozhi;
+                switching_mode_ = true;
             } else {
                 pending_single_click_ = false;
             }
         }
 
         pressed_ = true;
-        confirm_fired_ = false;
         long_press_fired_ = false;
         press_started_us_ = now;
     }
 
     if (double_click) {
-        ESP_LOGI(kTag, "Fast double-click on GPIO 3 detected! Switching mode from %s to %s",
+        ESP_LOGI(kTag, "Double-click on GPIO 3 detected! Switching mode from %s to %s",
                  BootModeName(current_mode_), BootModeName(target_mode));
         Confirm(target_mode);
     }
 }
 
 void ModeSelector::OnPressUp() {
-    bool update_menu = false;
-    BootMode selected = BootMode::Xiaozhi;
     const int64_t now = esp_timer_get_time();
 
-    {
-        std::lock_guard<std::mutex> lock(mutex_);
-        if (!pressed_) {
-            return;
-        }
-        pressed_ = false;
-        const int64_t held_us = now - press_started_us_;
-
-        if (long_press_fired_) {
-            long_press_fired_ = false;
-            pending_single_click_ = false;
-            return;
-        }
-
-        if (menu_active_) {
-            if (must_release_) {
-                // The press that entered the menu can never confirm it.
-                must_release_ = false;
-                menu_deadline_us_ = now + MsToUs(kMenuTimeoutMs);
-            } else if (!confirm_fired_ && held_us < MsToUs(kShortClickMs)) {
-                // Cycle through 2 modes: Xiaozhi <-> Chronchi
-                int current = static_cast<int>(selected_mode_);
-                int next = (current + 1) % kModeCount;
-                selected_mode_ = static_cast<BootMode>(next);
-                menu_deadline_us_ = now + MsToUs(kMenuTimeoutMs);
-                selected = selected_mode_;
-                update_menu = true;
-            }
-        } else if (held_us < MsToUs(kShortClickMs)) {
-            // Arm pending single-click. If a 2nd click arrives within kDoubleClickWindowMs,
-            // OnPressDown triggers double-click mode switch. If window expires, Tick fires short_click_.
-            pending_single_click_ = true;
-            last_release_us_ = now;
-        } else {
-            pending_single_click_ = false;
-        }
-    }
-
-    if (update_menu && display_ != nullptr) {
-        display_->ShowModeMenu(static_cast<int>(selected));
-    }
-}
-
-bool ModeSelector::IsMenuActive() const {
     std::lock_guard<std::mutex> lock(mutex_);
-    return menu_active_;
+    if (!pressed_) {
+        return;
+    }
+    pressed_ = false;
+    const int64_t held_us = now - press_started_us_;
+
+    if (switching_mode_) {
+        return;
+    }
+
+    if (long_press_fired_) {
+        long_press_fired_ = false;
+        pending_single_click_ = false;
+        return;
+    }
+
+    if (held_us < MsToUs(kShortClickMs)) {
+        // Arm pending single-click. If a 2nd click arrives within kDoubleClickWindowMs,
+        // OnPressDown triggers double-click mode switch. If window expires, Tick fires short_click_.
+        pending_single_click_ = true;
+        last_release_us_ = now;
+    } else {
+        pending_single_click_ = false;
+    }
 }
 
 void ModeSelector::TimerCallback(void* arg) {
@@ -149,15 +124,15 @@ void ModeSelector::RestartCallback(void*) {
 }
 
 void ModeSelector::Tick() {
-    bool enter_menu = false;
-    bool cancel_menu = false;
-    bool confirm = false;
     std::function<void()> fire_single_click;
-    BootMode selected = BootMode::Xiaozhi;
+    std::function<void()> fire_long_press;
     const int64_t now = esp_timer_get_time();
 
     {
         std::lock_guard<std::mutex> lock(mutex_);
+        if (switching_mode_) {
+            return;
+        }
 
         // Fire pending single click if double-click window expired without a second press
         if (pending_single_click_ && !pressed_) {
@@ -167,26 +142,12 @@ void ModeSelector::Tick() {
             }
         }
 
-        if (!menu_active_ && pressed_ && !long_press_fired_ &&
-            now - press_started_us_ >= MsToUs(kEnterMenuMs)) {
+        // Fire long press when button held >= kLongPressMs (2.5s)
+        if (pressed_ && !long_press_fired_ &&
+            now - press_started_us_ >= MsToUs(kLongPressMs)) {
             pending_single_click_ = false;
             long_press_fired_ = true;
-            menu_active_ = true;
-            must_release_ = true;
-            selected_mode_ = current_mode_;
-            menu_deadline_us_ = now + MsToUs(kMenuTimeoutMs);
-            enter_menu = true;
-            selected = selected_mode_;
-        } else if (menu_active_ && !must_release_ && pressed_ && !confirm_fired_ &&
-                   now - press_started_us_ >= MsToUs(kConfirmMs)) {
-            confirm_fired_ = true;
-            menu_active_ = false;
-            selected = selected_mode_;
-            confirm = true;
-        } else if (menu_active_ && now >= menu_deadline_us_) {
-            menu_active_ = false;
-            must_release_ = false;
-            cancel_menu = true;
+            fire_long_press = long_press_;
         }
     }
 
@@ -194,21 +155,9 @@ void ModeSelector::Tick() {
         fire_single_click();
     }
 
-    if (enter_menu) {
-        ESP_LOGI(kTag, "Mode menu opened (current=%s)", BootModeName(current_mode_));
-        if (before_menu_) {
-            before_menu_();
-        }
-        if (display_ != nullptr) {
-            display_->ShowModeMenu(static_cast<int>(selected));
-        }
-    } else if (cancel_menu) {
-        ESP_LOGI(kTag, "Mode menu timed out");
-        if (display_ != nullptr) {
-            display_->HideModeMenu();
-        }
-    } else if (confirm) {
-        Confirm(selected);
+    if (fire_long_press) {
+        ESP_LOGI(kTag, "Long press on GPIO 3 triggered (held >= %d ms)", kLongPressMs);
+        fire_long_press();
     }
 }
 
@@ -216,9 +165,10 @@ void ModeSelector::Confirm(BootMode selected) {
     if (selected == current_mode_) {
         ESP_LOGI(kTag, "Mode unchanged: %s", BootModeName(selected));
         if (display_ != nullptr) {
-            display_->HideModeMenu();
             display_->ShowNotification("Mode unchanged", 1500);
         }
+        std::lock_guard<std::mutex> lock(mutex_);
+        switching_mode_ = false;
         return;
     }
 
@@ -226,9 +176,10 @@ void ModeSelector::Confirm(BootMode selected) {
     if (err != ESP_OK) {
         ESP_LOGE(kTag, "Failed to save mode: %s", esp_err_to_name(err));
         if (display_ != nullptr) {
-            display_->HideModeMenu();
             display_->ShowNotification("Mode save failed", 3000);
         }
+        std::lock_guard<std::mutex> lock(mutex_);
+        switching_mode_ = false;
         return;
     }
 

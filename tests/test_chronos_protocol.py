@@ -48,6 +48,17 @@ class ChronosProtocolTest(unittest.TestCase):
         self.assertIn("BuildInfoPacket", proto_cc)
         self.assertIn("BuildBatteryPacket", proto_cc)
         self.assertIn("BuildEspPacket", proto_cc)
+        self.assertIn("BuildNotifyBatteryPacket", proto_cc)
+        self.assertIn("BuildSyncRequestPacket", proto_cc)
+        self.assertIn("BuildFindPhonePacket", proto_cc)
+        self.assertIn("BuildCameraCapturePacket", proto_cc)
+        self.assertIn("BuildMusicControlPacket", proto_cc)
+
+        # Chronos app commands
+        self.assertIn("case 0xCA:", proto_cc)  # Watch Specs
+        self.assertIn("case 0x79:", proto_cc)  # Camera ready
+        self.assertIn("case 0x7C:", proto_cc)  # 24-hour mode
+        self.assertIn("case 0x88:", proto_cc)  # High/Low temp
 
         # Maneuver recognition
         self.assertIn("ParseManeuverFromText", proto_cc)

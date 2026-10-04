@@ -1,10 +1,16 @@
 #include "chronchi_alert.h"
 #include "boards/esp32c3-inmp441/config.h"
+#include "boards/esp32c3-inmp441/shared_oled.h"
+#include "codecs/es8311_audio_codec.h"
+#include "codecs/no_audio_codec.h"
 
 #include <esp_log.h>
 #include <esp_timer.h>
+#include <driver/i2c_master.h>
 #include <cmath>
 #include <cstring>
+#include <mutex>
+#include <algorithm>
 
 namespace {
 constexpr char kTag[] = "ChronchiAlert";
@@ -22,10 +28,9 @@ ChronchiAlert::ChronchiAlert() = default;
 
 ChronchiAlert::~ChronchiAlert() {
     StopAlert();
-    if (tx_handle_ != nullptr) {
-        i2s_channel_disable(tx_handle_);
-        i2s_del_channel(tx_handle_);
-        tx_handle_ = nullptr;
+    if (audio_codec_ != nullptr) {
+        delete audio_codec_;
+        audio_codec_ = nullptr;
     }
 }
 
@@ -48,6 +53,9 @@ void ChronchiAlert::Initialize(gpio_num_t vibration_pin) {
     } else {
         ESP_LOGI(kTag, "Vibration motor pin not configured or invalid (NC)");
     }
+
+    // Hangatkan subsistem audio agar respon seketika saat ada notifikasi atau alarm
+    EnsureAudioInitialized();
 }
 
 void ChronchiAlert::SetVibration(bool enable) {
@@ -84,91 +92,139 @@ void ChronchiAlert::VibratePattern(uint32_t on_ms, uint32_t off_ms, uint8_t repe
     }, "vib_once", 2048, param, 3, nullptr);
 }
 
-void ChronchiAlert::VibrateNotification() {
-    ESP_LOGI(kTag, "Notification received: triggering double vibration pulse");
-    // 2x getar pendek (100ms ON, 80ms OFF, 100ms ON)
-    VibratePattern(100, 80, 2);
-}
-
 void ChronchiAlert::EnsureAudioInitialized() {
     if (audio_initialized_.load()) {
         return;
     }
 
-    i2s_chan_config_t chan_cfg = {
-        .id = I2S_NUM_0,
-        .role = I2S_ROLE_MASTER,
-        .dma_desc_num = 2,
-        .dma_frame_num = 128,
-        .auto_clear_after_cb = true,
-        .auto_clear_before_cb = false,
-        .intr_priority = 0,
-    };
-    esp_err_t err = i2s_new_channel(&chan_cfg, &tx_handle_, nullptr);
-    if (err != ESP_OK) {
-        ESP_LOGE(kTag, "Failed to create I2S TX channel: %s", esp_err_to_name(err));
+    static std::mutex init_mutex;
+    std::lock_guard<std::mutex> lock(init_mutex);
+    if (audio_initialized_.load()) {
         return;
     }
 
-    i2s_std_config_t std_cfg = {
-        .clk_cfg = {
-            .sample_rate_hz = kSampleRate,
-            .clk_src = I2S_CLK_SRC_DEFAULT,
-            .mclk_multiple = I2S_MCLK_MULTIPLE_256,
-        },
-        .slot_cfg = {
-            .data_bit_width = I2S_DATA_BIT_WIDTH_32BIT,
-            .slot_bit_width = I2S_SLOT_BIT_WIDTH_AUTO,
-            .slot_mode = I2S_SLOT_MODE_MONO,
-            .slot_mask = I2S_STD_SLOT_LEFT,
-            .ws_width = I2S_DATA_BIT_WIDTH_32BIT,
-            .ws_pol = false,
-            .bit_shift = true,
-        },
-        .gpio_cfg = {
-            .mclk = I2S_GPIO_UNUSED,
-            .bclk = AUDIO_I2S_GPIO_BCLK,
-            .ws = AUDIO_I2S_GPIO_WS,
-            .dout = AUDIO_I2S_GPIO_DOUT,
-            .din = I2S_GPIO_UNUSED,
-            .invert_flags = {
-                .mclk_inv = false,
-                .bclk_inv = false,
-                .ws_inv = false
-            }
+    i2c_master_bus_handle_t i2c_bus = GetEsp32c3SharedI2cBus();
+    bool is_es8311_detected = false;
+    uint8_t es8311_addr = AUDIO_ES8311_I2C_ADDR;
+
+    if (i2c_bus != nullptr) {
+        // Cek apakah modul WeAct ES8311 terpasang di I2C address 0x18 (default) atau 0x19
+        if (i2c_master_probe(i2c_bus, AUDIO_ES8311_I2C_ADDR, 50) == ESP_OK) {
+            is_es8311_detected = true;
+            es8311_addr = AUDIO_ES8311_I2C_ADDR;
+        } else if (i2c_master_probe(i2c_bus, 0x19, 50) == ESP_OK) {
+            is_es8311_detected = true;
+            es8311_addr = 0x19;
         }
-    };
-
-    err = i2s_channel_init_std_mode(tx_handle_, &std_cfg);
-    if (err != ESP_OK) {
-        ESP_LOGE(kTag, "Failed to init I2S std mode: %s", esp_err_to_name(err));
-        i2s_del_channel(tx_handle_);
-        tx_handle_ = nullptr;
-        return;
     }
 
-    err = i2s_channel_enable(tx_handle_);
-    if (err != ESP_OK) {
-        ESP_LOGE(kTag, "Failed to enable I2S channel: %s", esp_err_to_name(err));
-        return;
+    if (is_es8311_detected) {
+        ESP_LOGI(kTag, "Audio hardware: WeAct Studio ES8311 DAC + NS4150B PA (addr: 0x%02x, MCLK=GPIO%d, PA=GPIO%d)",
+                 es8311_addr, AUDIO_I2S_GPIO_MCLK, AUDIO_ES8311_PA_PIN);
+        audio_codec_ = new Es8311AudioCodec(
+            i2c_bus,
+            I2C_NUM_0,
+            kSampleRate,
+            kSampleRate,
+            AUDIO_I2S_GPIO_MCLK,
+            AUDIO_I2S_GPIO_BCLK,
+            AUDIO_I2S_GPIO_WS,
+            AUDIO_I2S_GPIO_DOUT,
+            AUDIO_I2S_GPIO_DIN,
+            AUDIO_ES8311_PA_PIN,
+            es8311_addr,
+            true,   // use_mclk = true (diperlukan ES8311)
+            false   // pa_inverted = false
+        );
+    } else {
+        ESP_LOGI(kTag, "Audio hardware: MAX98357A I2S Amplifier (BCLK=GPIO%d, WS=GPIO%d, DOUT=GPIO%d)",
+                 AUDIO_I2S_GPIO_BCLK, AUDIO_I2S_GPIO_WS, AUDIO_I2S_GPIO_DOUT);
+        audio_codec_ = new NoAudioCodecDuplex(
+            kSampleRate,
+            kSampleRate,
+            AUDIO_I2S_GPIO_BCLK,
+            AUDIO_I2S_GPIO_WS,
+            AUDIO_I2S_GPIO_DOUT,
+            AUDIO_I2S_GPIO_DIN
+        );
     }
 
-#if defined(AUDIO_ES8311_PA_PIN) && (AUDIO_ES8311_PA_PIN != GPIO_NUM_NC)
-    gpio_set_level(AUDIO_ES8311_PA_PIN, 1);
-#endif
+    if (audio_codec_ != nullptr) {
+        audio_codec_->Start();
+        audio_codec_->EnableInput(false);   // Mic tidak digunakan di Chronchi, hemat DMA & daya
+        audio_codec_->SetOutputVolume(100); // Volume maksimal 100%
+        audio_initialized_.store(true);
+        ESP_LOGI(kTag, "Chronchi speaker audio ready at 100%% volume");
+    } else {
+        ESP_LOGE(kTag, "Failed to create audio codec for Chronchi");
+    }
+}
 
-    audio_initialized_.store(true);
-    ESP_LOGI(kTag, "I2S Audio Bell ready (DOUT=GPIO%d, BCLK=GPIO%d, WS=GPIO%d)",
-             AUDIO_I2S_GPIO_DOUT, AUDIO_I2S_GPIO_BCLK, AUDIO_I2S_GPIO_WS);
+void ChronchiAlert::PlayNotificationSound() {
+    EnsureAudioInitialized();
+    if (audio_codec_ == nullptr) return;
+    if (alarm_active_.load()) return; // Jangan tumpuk jika alarm dering sedang aktif
+
+    xTaskCreate([](void* arg) {
+        auto* self = static_cast<ChronchiAlert*>(arg);
+        if (self->notif_busy_.exchange(true)) {
+            vTaskDelete(nullptr);
+            return;
+        }
+
+        // Suara "tit" notifikasi (70 ms, nada 2000 Hz, attack 2ms dan decay eksponensial bersih)
+        constexpr uint32_t kTitSamples = (kSampleRate * 70) / 1000; // 1680 samples
+        int16_t buf[kChunkSamples];
+        uint32_t sample_idx = 0;
+
+        while (sample_idx < kTitSamples && !self->alarm_active_.load()) {
+            size_t chunk = std::min<size_t>(kChunkSamples, kTitSamples - sample_idx);
+            for (size_t i = 0; i < chunk; i++) {
+                uint32_t s = sample_idx + i;
+                float t = static_cast<float>(s) / static_cast<float>(kSampleRate);
+
+                // Nada "tit" bernada 2000 Hz dengan attack halus 2ms agar tidak ada bunyi "pop"
+                float env = 1.0f;
+                if (s < (kSampleRate * 2) / 1000) {
+                    env = static_cast<float>(s) / (kSampleRate * 0.002f);
+                } else {
+                    float t_decay = static_cast<float>(s - (kSampleRate * 2) / 1000) / static_cast<float>(kSampleRate);
+                    env = std::exp(-t_decay * 35.0f);
+                }
+
+                // Sintesis gelombang sinus 2000 Hz + harmonik 3000 Hz tipis agar nyaring di speaker kecil
+                float raw = std::sin(kTwoPi * 2000.0f * t) * 0.85f + std::sin(kTwoPi * 3000.0f * t) * 0.15f;
+                int32_t val = static_cast<int32_t>(raw * env * 31500.0f);
+                if (val > 32767) val = 32767;
+                if (val < -32767) val = -32767;
+                buf[i] = static_cast<int16_t>(val);
+            }
+
+            if (self->audio_codec_ != nullptr) {
+                self->audio_codec_->Output(buf, chunk);
+            }
+            sample_idx += chunk;
+        }
+
+        self->notif_busy_.store(false);
+        vTaskDelete(nullptr);
+    }, "notif_snd", 2048, this, 4, nullptr);
+}
+
+void ChronchiAlert::VibrateNotification() {
+    ESP_LOGI(kTag, "Notification received: playing 'tit' chime and double vibration pulse");
+    PlayNotificationSound();
+    // 2x getar pendek (100ms ON, 80ms OFF, 100ms ON)
+    VibratePattern(100, 80, 2);
 }
 
 void ChronchiAlert::StartFindDeviceAlarm() {
     if (alarm_active_.load()) {
-        ESP_LOGI(kTag, "Find device alarm already running");
+        ESP_LOGI(kTag, "Find device alarm already active");
         return;
     }
 
-    ESP_LOGW(kTag, "=== FIND DEVICE TRIGGERED: Ringing loud bell and pulsing vibration! ===");
+    ESP_LOGW(kTag, "=== FIND DEVICE TRIGGERED: Ringing phone alarm and pulsating vibration! ===");
     alarm_active_.store(true);
     EnsureAudioInitialized();
 
@@ -184,7 +240,7 @@ void ChronchiAlert::StopAlert() {
         return;
     }
 
-    ESP_LOGI(kTag, "Stopping alert / bell ringing");
+    ESP_LOGI(kTag, "Stopping alert / alarm ringing");
     alarm_active_.store(false);
     SetVibration(false);
     alert_task_handle_ = nullptr;
@@ -195,82 +251,104 @@ void ChronchiAlert::AlertTask(void* param) {
     const int64_t start_time_us = esp_timer_get_time();
     constexpr int64_t kTimeoutUs = 30LL * 1000 * 1000;  // 30 detik timeout otomatis
 
-    int32_t pcm_buffer[kChunkSamples];
+    int16_t pcm_buffer[kChunkSamples];
 
-    // Parameter Chime Bell Klasik Dua Nada ("Ding-Dong" bernada tinggi & nyaring)
-    // Nada 1: 2048 Hz (G6) + 2560 Hz harmonik (Ding!)
-    // Nada 2: 1706 Hz + 2133 Hz (Dong!)
-    constexpr float f1_a = 2048.0f;
-    constexpr float f1_b = 2560.0f;
-    constexpr float f2_a = 1706.0f;
-    constexpr float f2_b = 2133.0f;
+    // Frekuensi warble dering telepon / alarm:
+    // F1: 1568.0 Hz (G6)
+    // F2: 2093.0 Hz (C7)
+    // Warble bergantian setiap 25 ms (40 Hz warble rate) - suara khas telepon berdering keras
+    constexpr float f1 = 1568.0f;
+    constexpr float f2 = 2093.0f;
+    constexpr uint32_t kWarbleSamples = (kSampleRate * 25) / 1000; // 25ms per warble step
+    constexpr uint32_t kFadeSamples   = (kSampleRate * 5)  / 1000; // 5ms fade in/out anti-pop
 
-    constexpr uint32_t kStrike1DurationSamples = (kSampleRate * 22) / 100; // 220ms
-    constexpr uint32_t kStrike2DurationSamples = (kSampleRate * 28) / 100; // 280ms
-    constexpr uint32_t kPauseDurationSamples   = (kSampleRate * 15) / 100; // 150ms
-    constexpr uint32_t kTotalCycleSamples      = kStrike1DurationSamples + kStrike2DurationSamples + kPauseDurationSamples;
+    // Pola Dering Telepon (Double Ring Cycle):
+    // Burst 1: 420 ms dering warble + getar ON
+    // Gap:     140 ms jeda hening + getar OFF
+    // Burst 2: 420 ms dering warble + getar ON
+    // Pause:   720 ms jeda antar deringan + getar OFF
+    // Total Siklus: 1700 ms (1.7 detik)
+    constexpr uint32_t kBurst1Samples = (kSampleRate * 420) / 1000; // 10080
+    constexpr uint32_t kGapSamples    = (kSampleRate * 140) / 1000; // 3360
+    constexpr uint32_t kBurst2Samples = (kSampleRate * 420) / 1000; // 10080
+    constexpr uint32_t kPauseSamples  = (kSampleRate * 720) / 1000; // 17280
+    constexpr uint32_t kTotalCycleSamples = kBurst1Samples + kGapSamples + kBurst2Samples + kPauseSamples;
 
     while (self->alarm_active_.load()) {
         if (esp_timer_get_time() - start_time_us > kTimeoutUs) {
-            ESP_LOGI(kTag, "Alarm timed out after 30 seconds");
+            ESP_LOGI(kTag, "Find device alarm timed out after 30 seconds");
             break;
         }
 
         uint32_t sample_in_cycle = 0;
-        self->SetVibration(true);  // Getar saat bell mulai berdentang
 
         while (sample_in_cycle < kTotalCycleSamples && self->alarm_active_.load()) {
             size_t chunk_count = std::min<size_t>(kChunkSamples, kTotalCycleSamples - sample_in_cycle);
 
+            // Tentukan status burst saat ini
+            bool in_burst1 = (sample_in_cycle < kBurst1Samples);
+            bool in_burst2 = (sample_in_cycle >= (kBurst1Samples + kGapSamples) &&
+                              sample_in_cycle < (kBurst1Samples + kGapSamples + kBurst2Samples));
+            bool is_active_burst = in_burst1 || in_burst2;
+
+            self->SetVibration(is_active_burst);
+
             for (size_t i = 0; i < chunk_count; i++) {
-                uint32_t current_sample = sample_in_cycle + i;
+                uint32_t s = sample_in_cycle + i;
                 float tone = 0.0f;
 
-                if (current_sample < kStrike1DurationSamples) {
-                    // Strike 1: Nada Ding (Tinggi & Menggelegar)
-                    float t = static_cast<float>(current_sample) / static_cast<float>(kSampleRate);
-                    float env = std::exp(-t * 11.0f); // Peluruhan eksponensial khas bell
-                    tone = (std::sin(kTwoPi * f1_a * t) * 0.60f + std::sin(kTwoPi * f1_b * t) * 0.40f) * env;
-                } else if (current_sample < kStrike1DurationSamples + kStrike2DurationSamples) {
-                    // Strike 2: Nada Dong
-                    uint32_t rel_sample = current_sample - kStrike1DurationSamples;
-                    float t = static_cast<float>(rel_sample) / static_cast<float>(kSampleRate);
-                    float env = std::exp(-t * 9.0f);
-                    tone = (std::sin(kTwoPi * f2_a * t) * 0.60f + std::sin(kTwoPi * f2_b * t) * 0.40f) * env;
+                uint32_t burst_rel_s = 0;
+                bool active = false;
+
+                if (s < kBurst1Samples) {
+                    burst_rel_s = s;
+                    active = true;
+                } else if (s >= (kBurst1Samples + kGapSamples) && s < (kBurst1Samples + kGapSamples + kBurst2Samples)) {
+                    burst_rel_s = s - (kBurst1Samples + kGapSamples);
+                    active = true;
+                }
+
+                if (active) {
+                    // Warble bergantian F1 dan F2 tiap 25 ms
+                    uint32_t warble_phase = (burst_rel_s / kWarbleSamples) % 2;
+                    float freq = (warble_phase == 0) ? f1 : f2;
+                    float t = static_cast<float>(s) / static_cast<float>(kSampleRate);
+
+                    // Fade in 5ms dan Fade out 5ms di ujung burst agar tidak berderik/pop
+                    float fade = 1.0f;
+                    if (burst_rel_s < kFadeSamples) {
+                        fade = static_cast<float>(burst_rel_s) / static_cast<float>(kFadeSamples);
+                    } else if (burst_rel_s > (kBurst1Samples - kFadeSamples)) {
+                        fade = static_cast<float>(kBurst1Samples - burst_rel_s) / static_cast<float>(kFadeSamples);
+                    }
+
+                    // Modulasi amplitudo 20Hz untuk rasa getar dering mekanik
+                    float tremolo = 0.85f + 0.15f * std::sin(kTwoPi * 20.0f * t);
+                    // Harmonik kedua untuk ketajaman di speaker micro
+                    tone = (std::sin(kTwoPi * freq * t) * 0.80f + std::sin(kTwoPi * (freq * 1.5f) * t) * 0.20f) * tremolo * fade;
                 } else {
-                    // Jeda sejenak sebelum dentangan berikutnya
                     tone = 0.0f;
                 }
 
-                // Skala maksimal 100% digital volume (amplitude 32767 << 16 untuk I2S 32-bit slot)
-                int32_t val_16 = static_cast<int32_t>(tone * 32767.0f);
-                if (val_16 > 32767) val_16 = 32767;
-                if (val_16 < -32767) val_16 = -32767;
-                pcm_buffer[i] = val_16 << 16;
+                int32_t val = static_cast<int32_t>(tone * 31500.0f);
+                if (val > 32767) val = 32767;
+                if (val < -32767) val = -32767;
+                pcm_buffer[i] = static_cast<int16_t>(val);
             }
 
-            // Tulis audio langsung ke speaker MAX98357A
-            if (self->tx_handle_ != nullptr) {
-                size_t bytes_written = 0;
-                i2s_channel_write(self->tx_handle_, pcm_buffer, chunk_count * sizeof(int32_t),
-                                  &bytes_written, pdMS_TO_TICKS(100));
+            if (self->audio_codec_ != nullptr) {
+                self->audio_codec_->Output(pcm_buffer, chunk_count);
             }
 
             sample_in_cycle += chunk_count;
-
-            // Matikan getar di paruh akhir siklus untuk menghasilkan efek denyut berirama
-            if (sample_in_cycle >= (kStrike1DurationSamples + kStrike2DurationSamples)) {
-                self->SetVibration(false);
-            }
         }
 
         self->SetVibration(false);
-        // Delay singkat 100ms sebelum dentangan bell siklus berikutnya
-        vTaskDelay(pdMS_TO_TICKS(100));
     }
 
     self->SetVibration(false);
     self->alarm_active_.store(false);
-    ESP_LOGI(kTag, "AlertTask finished");
+    self->alert_task_handle_ = nullptr;
+    ESP_LOGI(kTag, "Find device AlertTask finished");
     vTaskDelete(nullptr);
 }

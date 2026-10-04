@@ -1,4 +1,5 @@
 #include "audio_service.h"
+#include "youtube_audio_poller.h"
 #include <esp_heap_caps.h>
 #include <esp_log.h>
 #include <cstdint>
@@ -588,12 +589,21 @@ void AudioService::EnableWakeWordDetection(bool enable) {
         return;
     }
 
+    if (enable && YouTubeAudioPoller::GetInstance().IsPlaying()) {
+        ESP_LOGD(TAG, "Cannot enable wake word detection: YouTube is playing/active");
+        return;
+    }
+
     ESP_LOGD(TAG, "%s wake word detection", enable ? "Enabling" : "Disabling");
     if (enable) {
         if (!wake_word_initialized_) {
             if (!wake_word_->Initialize(codec_, models_list_)) {
-                ESP_LOGE(TAG, "Failed to initialize wake word");
-                return;
+                // If temporary heap fragmentation prevented allocation, wait 200ms for idle task/lwIP to cleanup and retry
+                vTaskDelay(pdMS_TO_TICKS(200));
+                if (!wake_word_->Initialize(codec_, models_list_)) {
+                    ESP_LOGE(TAG, "Failed to initialize wake word");
+                    return;
+                }
             }
             wake_word_initialized_ = true;
         }
@@ -789,6 +799,12 @@ bool AudioService::IsIdle() {
     std::lock_guard<std::mutex> lock(audio_queue_mutex_);
     return audio_encode_queue_.empty() && audio_decode_queue_.empty() &&
         audio_playback_queue_.empty() && audio_testing_queue_.empty() &&
+        !decode_in_flight_ && !output_in_flight_;
+}
+
+bool AudioService::IsPlaybackIdle() {
+    std::lock_guard<std::mutex> lock(audio_queue_mutex_);
+    return audio_decode_queue_.empty() && audio_playback_queue_.empty() &&
         !decode_in_flight_ && !output_in_flight_;
 }
 

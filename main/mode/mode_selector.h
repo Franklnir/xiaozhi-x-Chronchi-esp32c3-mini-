@@ -14,18 +14,16 @@ class ModeSelector {
 public:
     static constexpr int kShortClickMs = 700;
     static constexpr int kDoubleClickWindowMs = 400;
-    static constexpr int kEnterMenuMs = 2500;
-    static constexpr int kConfirmMs = 2000;
-    static constexpr int kMenuTimeoutMs = 10000;
+    static constexpr int kLongPressMs = 2500;
 
     ModeSelector(BootMode current_mode, Display* display,
                  std::function<void()> short_click,
-                 std::function<void()> before_menu = {});
+                 std::function<void()> long_press = {});
     ~ModeSelector();
 
     void OnPressDown();
     void OnPressUp();
-    bool IsMenuActive() const;
+    bool IsMenuActive() const { return false; }
 
 private:
     static void TimerCallback(void* arg);
@@ -34,23 +32,19 @@ private:
     void Confirm(BootMode selected);
 
     BootMode current_mode_;
-    BootMode selected_mode_;
     Display* display_;
     std::function<void()> short_click_;
-    std::function<void()> before_menu_;
-    bool long_press_fired_ = false;
+    std::function<void()> long_press_;
     esp_timer_handle_t timer_ = nullptr;
     esp_timer_handle_t restart_timer_ = nullptr;
 
     mutable std::mutex mutex_;
     bool pressed_ = false;
-    bool menu_active_ = false;
-    bool must_release_ = false;
-    bool confirm_fired_ = false;
+    bool long_press_fired_ = false;
     bool pending_single_click_ = false;
+    bool switching_mode_ = false;
     int64_t press_started_us_ = 0;
     int64_t last_release_us_ = 0;
-    int64_t menu_deadline_us_ = 0;
 };
 
 #endif  // XIAOZHI_MODE_SELECTOR_H_

@@ -3,7 +3,9 @@
 #include <esp_timer.h>
 
 #include <algorithm>
+#include <cstdio>
 #include <cstring>
+#include <ctime>
 
 namespace {
 constexpr char kDefaultTime[] = "--:--";
@@ -104,9 +106,19 @@ void ChronchiState::SetActiveLocked(const ChronchiScreen& screen, int64_t now_us
 }
 
 void ChronchiState::StampDeviceBatteryLocked(ChronchiScreen& screen) const {
-    screen.battery = device_battery_;
-    screen.charging = device_charging_;
-    screen.battery_valid = device_battery_valid_;
+    if (device_battery_valid_) {
+        screen.battery = device_battery_;
+        screen.charging = device_charging_;
+        screen.battery_valid = true;
+    } else if (phone_battery_valid_) {
+        screen.battery = phone_battery_;
+        screen.charging = phone_charging_;
+        screen.battery_valid = true;
+    } else {
+        screen.battery = 0;
+        screen.charging = false;
+        screen.battery_valid = false;
+    }
     screen.connection = connected_ ? ChronchiConnectionState::Connected
                                    : ChronchiConnectionState::Disconnected;
 }
@@ -173,11 +185,30 @@ void ChronchiState::UpdateClock(const char* time, const char* date) {
     RefreshHomeLocked();
 }
 
+void ChronchiState::Set24HourMode(bool hour24) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (hour24_ == hour24) return;
+    hour24_ = hour24;
+    ++revision_;
+}
+
 void ChronchiState::UpdatePhoneStatus(uint8_t battery, bool charging) {
-    // Phone battery remains protocol-compatible but cannot replace the local
-    // ESP32 battery shown in the OLED header.
-    (void)battery;
-    (void)charging;
+    std::lock_guard<std::mutex> lock(mutex_);
+    phone_battery_ = std::min<uint8_t>(battery, 100);
+    phone_charging_ = charging;
+    phone_battery_valid_ = true;
+    if (!device_battery_valid_) {
+        StampDeviceBatteryLocked(home_);
+        StampDeviceBatteryLocked(active_);
+        ++revision_;
+    }
+}
+
+void ChronchiState::UpdateWeatherHighLow(const char* high_low) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (high_low != nullptr) {
+        CopyText(weather_high_low_, sizeof(weather_high_low_), high_low);
+    }
 }
 
 void ChronchiState::UpdateDeviceBattery(uint8_t battery, bool charging) {
@@ -259,6 +290,18 @@ void ChronchiState::ApplyScreen(const ChronchiScreen& screen) {
     }
 }
 
+void ChronchiState::UpdateNavCustomIcon(const uint8_t* icon_32x32) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (!navigation_active_ || icon_32x32 == nullptr) return;
+    saved_navigation_.has_custom_icon = true;
+    std::memcpy(saved_navigation_.custom_icon, icon_32x32, sizeof(saved_navigation_.custom_icon));
+    if (active_.type == ChronchiScreenType::Navigation) {
+        active_.has_custom_icon = true;
+        std::memcpy(active_.custom_icon, icon_32x32, sizeof(active_.custom_icon));
+        ++revision_;
+    }
+}
+
 void ChronchiState::StopNavigation() {
     std::lock_guard<std::mutex> lock(mutex_);
     navigation_active_ = false;
@@ -289,6 +332,45 @@ void ChronchiState::ShowSystem(const char* primary, const char* secondary) {
 bool ChronchiState::Tick() {
     std::lock_guard<std::mutex> lock(mutex_);
     const int64_t now = esp_timer_get_time();
+    bool changed = false;
+
+    // Real-time clock update from ESP32 RTC
+    const time_t now_sec = time(nullptr);
+    if (now_sec > 1700000000) {  // Valid RTC time (year >= 2024)
+        struct tm tm_val = {};
+        localtime_r(&now_sec, &tm_val);
+
+        char current_time[9] = {};
+        if (hour24_) {
+            std::snprintf(current_time, sizeof(current_time), "%02d:%02d",
+                          tm_val.tm_hour, tm_val.tm_min);
+        } else {
+            int h12 = tm_val.tm_hour % 12;
+            if (h12 == 0) h12 = 12;
+            std::snprintf(current_time, sizeof(current_time), "%02d:%02d",
+                          h12, tm_val.tm_min);
+        }
+
+        static const char* const kDayNames[] = {
+            "Min", "Sen", "Sel", "Rab", "Kam", "Jum", "Sab"
+        };
+        const char* day_name = (tm_val.tm_wday >= 0 && tm_val.tm_wday < 7)
+                                   ? kDayNames[tm_val.tm_wday]
+                                   : "";
+        char current_date[33] = {};
+        std::snprintf(current_date, sizeof(current_date), "%s, %02d/%02d/%04d",
+                      day_name, tm_val.tm_mday, tm_val.tm_mon + 1, tm_val.tm_year + 1900);
+
+        if (std::strcmp(home_.time, current_time) != 0) {
+            CopyText(home_.time, sizeof(home_.time), current_time);
+            CopyText(home_.date, sizeof(home_.date), current_date);
+            if (active_.type == ChronchiScreenType::Home) {
+                CopyText(active_.time, sizeof(active_.time), current_time);
+                CopyText(active_.date, sizeof(active_.date), current_date);
+            }
+            changed = true;
+        }
+    }
 
     // Auto-revert navigation if no update received for 60 seconds
     if (navigation_active_ && last_navigation_us_ != 0 &&
@@ -306,6 +388,11 @@ bool ChronchiState::Tick() {
         } else {
             SetActiveLocked(home_, now);
         }
+        return true;
+    }
+
+    if (changed) {
+        ++revision_;
         return true;
     }
     return false;

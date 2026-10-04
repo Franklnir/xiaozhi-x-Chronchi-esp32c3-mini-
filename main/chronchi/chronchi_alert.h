@@ -8,20 +8,25 @@
 #include <atomic>
 #include <cstdint>
 
+class AudioCodec;
+
 class ChronchiAlert {
 public:
     static ChronchiAlert& GetInstance();
 
     void Initialize(gpio_num_t vibration_pin = GPIO_NUM_NC);
 
-    // Getar untuk notifikasi umum (WhatsApp, Telegram, dll)
+    // Suara notifikasi "tit" (singkat, nyaring, dan bersih)
+    void PlayNotificationSound();
+
+    // Getar dan bunyi suara "tit" untuk notifikasi umum (WhatsApp, Telegram, SMS, dll)
     void VibrateNotification();
 
     // Pola getar kustom
     void VibratePattern(uint32_t on_ms, uint32_t off_ms, uint8_t repeat);
 
     // Alarm pencarian perangkat dari Chronos (Find My Device)
-    // Berdering nyaring maksimal seperti bell + getar terus menerus
+    // Suara berdering nyaring (kriiiing... kriiiing...) + getar sinkron
     void StartFindDeviceAlarm();
 
     // Alarm panggilan telepon masuk
@@ -42,9 +47,10 @@ private:
     static void AlertTask(void* param);
 
     gpio_num_t vibration_pin_ = GPIO_NUM_NC;
-    i2s_chan_handle_t tx_handle_ = nullptr;
+    AudioCodec* audio_codec_ = nullptr;
     TaskHandle_t alert_task_handle_ = nullptr;
     std::atomic<bool> alarm_active_{false};
+    std::atomic<bool> notif_busy_{false};
     std::atomic<bool> audio_initialized_{false};
 };
 

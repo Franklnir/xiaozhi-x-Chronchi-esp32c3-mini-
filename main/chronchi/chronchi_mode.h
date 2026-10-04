@@ -28,11 +28,6 @@ private:
     Display* display_ = nullptr;
     esp_err_t ble_status_ = ESP_FAIL;
     int64_t rollback_confirmation_due_us_ = 0;
-
-    // Triple-click GPIO3 to clear WiFi
-    int click_count_ = 0;
-    int64_t last_click_us_ = 0;
-    static constexpr int64_t kTripleClickWindowUs = 1000000; // 1 second window
 };
 
 #endif  // XIAOZHI_CHRONCHI_MODE_H_

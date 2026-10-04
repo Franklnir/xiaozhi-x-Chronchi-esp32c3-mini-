@@ -3,6 +3,8 @@
 #include "boards/esp32c3-inmp441/config.h"
 #include "boards/esp32c3-inmp441/shared_oled.h"
 #include "display/display.h"
+#include "mode/mode_store.h"
+#include "settings.h"
 
 #include <esp_heap_caps.h>
 #include <esp_log.h>
@@ -34,7 +36,18 @@ void ChronosMode::Initialize() {
 
     display_ = GetEsp32c3SharedOled(true);
     mode_selector_ = std::make_unique<ModeSelector>(
-        BootMode::Chronos, display_, [this]() { NextPage(); });
+        BootMode::Chronos, display_, [this]() { NextPage(); },
+        [this]() {
+            ESP_LOGI(kTag, "GPIO 3 Long Press in Chronos mode -> Switching to Xiaozhi WiFi Config Mode");
+            Settings settings("system", true);
+            settings.SetInt("force_wifi_cfg", 1);
+            ModeStore::Save(BootMode::Xiaozhi);
+            if (display_ != nullptr) {
+                display_->ShowNotification("WiFi Config...", 2000);
+            }
+            vTaskDelay(pdMS_TO_TICKS(600));
+            esp_restart();
+        });
     button_.OnPressDown([this]() { mode_selector_->OnPressDown(); });
     button_.OnPressUp([this]() { mode_selector_->OnPressUp(); });
 

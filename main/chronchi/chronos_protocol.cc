@@ -92,18 +92,54 @@ void ChronosProtocol::HandlePacket(const uint8_t* data, size_t length) {
             case 0x7E:  // Weather
                 HandleWeather(data, length);
                 break;
+            case 0x88:  // Weather high / low temperature
+                if (length >= 8) {
+                    const int signH = (data[6] & 0x80) ? -1 : 1;
+                    const int tempH = static_cast<int>(data[6] & 0x7F) * signH;
+                    const int signL = (data[7] & 0x80) ? -1 : 1;
+                    const int tempL = static_cast<int>(data[7] & 0x7F) * signL;
+                    char hl_str[24] = {};
+                    std::snprintf(hl_str, sizeof(hl_str), "%d/%d C", tempL, tempH);
+                    state_.UpdateWeatherHighLow(hl_str);
+                    ESP_LOGI(kTag, "Chronos weather high/low: %s", hl_str);
+                }
+                break;
             case 0x72:  // Notification / Ringer
                 HandleNotification(data, length);
                 break;
             case 0xEF:  // Navigation
                 HandleNavigation(data, length);
                 break;
+            case 0xEE:  // Navigation Icon data
+                HandleNavigationIcon(data, length);
+                break;
             case 0x71:  // Find Watch
                 state_.ShowSystem("CARI PERANGKAT", "Panggilan dari Chronos");
                 ChronchiAlert::GetInstance().StartFindDeviceAlarm();
                 break;
+            case 0x79:  // Camera state
+                if (length >= 7) {
+                    camera_ready_ = (data[6] == 1);
+                    if (camera_ready_) {
+                        state_.ShowSystem("KAMERA AKTIF", "Tekan tombol untuk foto");
+                    } else {
+                        state_.DismissTransient();
+                    }
+                    ESP_LOGI(kTag, "Chronos camera ready: %s", camera_ready_ ? "yes" : "no");
+                }
+                break;
+            case 0x7C:  // 24-hour mode
+                if (length >= 7) {
+                    state_.Set24HourMode(data[6] == 0);
+                    ESP_LOGI(kTag, "Chronos 24-hour mode set to: %s", (data[6] == 0) ? "24h" : "12h");
+                }
+                break;
             case 0x9D:  // Music info
                 HandleMusic(data, length);
+                break;
+            case 0xCA:  // App version / Watch Info request
+                send_esp_requested_ = true;
+                ESP_LOGI(kTag, "Chronos requested watch specs (0xCA)");
                 break;
             case 0x23:  // Reset command
                 ESP_LOGI(kTag, "Chronos reset command received");
@@ -121,6 +157,23 @@ void ChronosProtocol::HandlePacket(const uint8_t* data, size_t length) {
             std::memcpy(city, data + 7, city_len);
             city[city_len] = '\0';
             state_.UpdateWeather(nullptr, city);
+        } else if (command == 0x7F && length >= 15 && data[3] == 0xFE) {
+            // Weather location payload: [6]=payloadLen, [7..14]=lat/lon, [15..]=city
+            const uint8_t payload_len = data[6];
+            if (length >= 7 + payload_len && payload_len > 8) {
+                const uint8_t* payload = data + 7;
+                char city[32] = {};
+                size_t c_idx = 8;
+                size_t out_idx = 0;
+                while (c_idx < payload_len && payload[c_idx] != 0 && out_idx + 1 < sizeof(city)) {
+                    city[out_idx++] = static_cast<char>(payload[c_idx++]);
+                }
+                city[out_idx] = '\0';
+                if (city[0] != '\0') {
+                    state_.UpdateWeather(nullptr, city);
+                    ESP_LOGI(kTag, "Chronos weather location city: %s", city);
+                }
+            }
         }
     }
 }
@@ -201,7 +254,13 @@ void ChronosProtocol::HandleNotification(const uint8_t* data, size_t length) {
     const uint8_t state = data[7];
 
     if (icon == 0x01) {
-        state_.ShowSystem("PANGGILAN", "Panggilan Masuk");
+        char caller[48] = {};
+        if (length > 8) {
+            const size_t caller_len = std::min(length - 8, sizeof(caller) - 1);
+            std::memcpy(caller, data + 8, caller_len);
+            caller[caller_len] = '\0';
+        }
+        state_.ShowSystem("PANGGILAN", caller[0] != '\0' ? caller : "Panggilan Masuk");
         ChronchiAlert::GetInstance().StartCallAlert();
         return;
     }
@@ -262,11 +321,14 @@ void ChronosProtocol::HandleNavigation(const uint8_t* data, size_t length) {
 
     if (mode == 0x00) {
         ESP_LOGI(kTag, "Chronos navigation stopped");
+        nav_icon_pos_mask_ = 0;
+        nav_icon_valid_ = false;
         state_.StopNavigation();
         return;
     }
 
     if (((mode & 0x80) != 0 || mode == 0x01) && length >= 12) {
+        const bool has_icon = (data[6] == 1);
         char title[64] = {};
         char duration[32] = {};
         char distance[32] = {};
@@ -285,19 +347,132 @@ void ChronosProtocol::HandleNavigation(const uint8_t* data, size_t length) {
         ChronchiScreen screen = {};
         screen.type = ChronchiScreenType::Navigation;
         ChronchiState::CopyText(screen.source_app, sizeof(screen.source_app), "NAVIGASI");
-        ChronchiState::CopyText(screen.primary, sizeof(screen.primary),
-                                directions[0] != '\0' ? directions : title);
-        ChronchiState::CopyText(screen.secondary, sizeof(screen.secondary),
-                                distance[0] != '\0' ? distance : duration);
+
+        // Parse maneuver by inspecting BOTH directions and title
+        screen.maneuver = ParseManeuverFromText(directions, title);
+
+        // Arrange Primary (instruction / street), Secondary (distance / duration / street), Footer (ETA)
+        if (title[0] != '\0' && directions[0] != '\0') {
+            const ChronchiManeuver title_maneuver = ParseManeuverFromText(title);
+            if (title_maneuver != ChronchiManeuver::Straight && title_maneuver != ChronchiManeuver::Unknown) {
+                // Title has the action (e.g. "Belok Kanan")
+                ChronchiState::CopyText(screen.primary, sizeof(screen.primary), title);
+                ChronchiState::CopyText(screen.secondary, sizeof(screen.secondary), directions);
+            } else {
+                // Directions has the instruction / road
+                ChronchiState::CopyText(screen.primary, sizeof(screen.primary), directions);
+                if (distance[0] != '\0') {
+                    if (duration[0] != '\0') {
+                        char dist_dur[72] = {};
+                        std::snprintf(dist_dur, sizeof(dist_dur), "%s - %s", distance, duration);
+                        ChronchiState::CopyText(screen.secondary, sizeof(screen.secondary), dist_dur);
+                    } else {
+                        ChronchiState::CopyText(screen.secondary, sizeof(screen.secondary), distance);
+                    }
+                } else {
+                    ChronchiState::CopyText(screen.secondary, sizeof(screen.secondary), title);
+                }
+            }
+        } else {
+            ChronchiState::CopyText(screen.primary, sizeof(screen.primary),
+                                    directions[0] != '\0' ? directions : title);
+            ChronchiState::CopyText(screen.secondary, sizeof(screen.secondary),
+                                    distance[0] != '\0' ? distance : duration);
+        }
+
+        // Footer: ETA or duration
         if (eta[0] != '\0') {
-            ChronchiState::CopyText(screen.footer, sizeof(screen.footer), eta);
-        } else if (duration[0] != '\0' && distance[0] != '\0') {
+            if (duration[0] != '\0' && screen.secondary[0] != '\0' && std::strstr(screen.secondary, duration) == nullptr) {
+                char eta_dur[72] = {};
+                std::snprintf(eta_dur, sizeof(eta_dur), "%s (%s)", eta, duration);
+                ChronchiState::CopyText(screen.footer, sizeof(screen.footer), eta_dur);
+            } else {
+                ChronchiState::CopyText(screen.footer, sizeof(screen.footer), eta);
+            }
+        } else if (duration[0] != '\0' && distance[0] != '\0' && std::strstr(screen.secondary, duration) == nullptr) {
             ChronchiState::CopyText(screen.footer, sizeof(screen.footer), duration);
         }
-        screen.maneuver = ParseManeuverFromText(directions[0] != '\0' ? directions : title);
+
+        // Custom icon from Chronos if received
+        if (has_icon && nav_icon_valid_) {
+            screen.has_custom_icon = true;
+            std::memcpy(screen.custom_icon, nav_icon_32x32_, sizeof(screen.custom_icon));
+        }
 
         state_.ApplyScreen(screen);
-        ESP_LOGI(kTag, "Chronos navigation update: dir='%s' dist='%s'", screen.primary, screen.secondary);
+        ESP_LOGI(kTag, "Chronos nav update: mnv=%u icon=%d dir='%s' dist='%s' eta='%s'",
+                 static_cast<unsigned>(screen.maneuver), screen.has_custom_icon,
+                 screen.primary, screen.secondary, screen.footer);
+    }
+}
+
+void ChronosProtocol::HandleNavigationIcon(const uint8_t* data, size_t length) {
+    if (data == nullptr || length < 107 || data[3] != 0xFE) return;
+    const uint8_t pos = data[6];
+    if (pos > 2) return;
+
+    const uint32_t crc = (static_cast<uint32_t>(data[7]) << 24) |
+                         (static_cast<uint32_t>(data[8]) << 16) |
+                         (static_cast<uint32_t>(data[9]) << 8) |
+                         static_cast<uint32_t>(data[10]);
+
+    if (crc != nav_icon_crc_) {
+        nav_icon_crc_ = crc;
+        nav_icon_pos_mask_ = 0;
+        nav_icon_valid_ = false;
+        std::memset(nav_icon_48x48_, 0, sizeof(nav_icon_48x48_));
+    }
+
+    std::memcpy(nav_icon_48x48_ + (pos * 96), data + 11, 96);
+    nav_icon_pos_mask_ |= static_cast<uint8_t>(1 << pos);
+
+    ESP_LOGD(kTag, "Chronos nav icon chunk pos=%u crc=0x%08lX mask=0x%02X",
+             pos, static_cast<unsigned long>(crc), nav_icon_pos_mask_);
+
+    if (nav_icon_pos_mask_ == 0x07) {
+        Downsample48To32(nav_icon_48x48_, nav_icon_32x32_);
+        nav_icon_valid_ = true;
+        state_.UpdateNavCustomIcon(nav_icon_32x32_);
+        ESP_LOGI(kTag, "Chronos nav icon 48x48 assembled & applied to display");
+    }
+}
+
+void ChronosProtocol::Downsample48To32(const uint8_t* src, uint8_t* dst) {
+    if (src == nullptr || dst == nullptr) return;
+    std::memset(dst, 0, 128);
+
+    // Count set bits to check for inversion (normal is white arrow on black bg)
+    int set_bits = 0;
+    for (size_t i = 0; i < 288; ++i) {
+        uint8_t b = src[i];
+        while (b) {
+            set_bits += (b & 1);
+            b >>= 1;
+        }
+    }
+    const bool invert = (set_bits > 1728);  // > 75% white indicates inverted image
+
+    auto get_px = [src, invert](int x, int y) -> bool {
+        if (x < 0 || x >= 48 || y < 0 || y >= 48) return false;
+        const int byte_idx = y * 6 + (x / 8);
+        const int bit_idx = 7 - (x % 8);
+        bool val = (src[byte_idx] & (1 << bit_idx)) != 0;
+        return invert ? !val : val;
+    };
+
+    for (int ty = 0; ty < 32; ++ty) {
+        for (int tx = 0; tx < 32; ++tx) {
+            const int sx = (tx * 3) / 2;
+            const int sy = (ty * 3) / 2;
+            // 2x2 area sampling ensures thin 1px lines are preserved
+            const bool px = get_px(sx, sy) ||
+                            (sx + 1 < 48 && get_px(sx + 1, sy)) ||
+                            (sy + 1 < 48 && get_px(sx, sy + 1)) ||
+                            (sx + 1 < 48 && sy + 1 < 48 && get_px(sx + 1, sy + 1));
+            if (px) {
+                dst[ty * 4 + (tx / 8)] |= static_cast<uint8_t>(0x80 >> (tx % 8));
+            }
+        }
     }
 }
 
@@ -373,6 +548,65 @@ size_t ChronosProtocol::BuildEspPacket(uint8_t* buffer, size_t capacity) {
     return total_len;
 }
 
+size_t ChronosProtocol::BuildNotifyBatteryPacket(uint8_t* buffer, size_t capacity, bool state) {
+    if (buffer == nullptr || capacity < 7) return 0;
+    buffer[0] = 0xAB;
+    buffer[1] = 0x00;
+    buffer[2] = 0x04;
+    buffer[3] = 0xFE;
+    buffer[4] = 0x91;
+    buffer[5] = 0x80;
+    buffer[6] = state ? 0x01 : 0x00;
+    return 7;
+}
+
+size_t ChronosProtocol::BuildSyncRequestPacket(uint8_t* buffer, size_t capacity) {
+    if (buffer == nullptr || capacity < 6) return 0;
+    buffer[0] = 0xAB;
+    buffer[1] = 0x00;
+    buffer[2] = 0x03;
+    buffer[3] = 0xFE;
+    buffer[4] = 0x23;
+    buffer[5] = 0x80;
+    return 6;
+}
+
+size_t ChronosProtocol::BuildFindPhonePacket(uint8_t* buffer, size_t capacity, bool state) {
+    if (buffer == nullptr || capacity < 7) return 0;
+    buffer[0] = 0xAB;
+    buffer[1] = 0x00;
+    buffer[2] = 0x04;
+    buffer[3] = 0xFF;
+    buffer[4] = 0x7D;
+    buffer[5] = 0x80;
+    buffer[6] = state ? 0x01 : 0x00;
+    return 7;
+}
+
+size_t ChronosProtocol::BuildCameraCapturePacket(uint8_t* buffer, size_t capacity) {
+    if (buffer == nullptr || capacity < 7) return 0;
+    buffer[0] = 0xAB;
+    buffer[1] = 0x00;
+    buffer[2] = 0x04;
+    buffer[3] = 0xFF;
+    buffer[4] = 0x79;
+    buffer[5] = 0x80;
+    buffer[6] = 0x01;
+    return 7;
+}
+
+size_t ChronosProtocol::BuildMusicControlPacket(uint8_t* buffer, size_t capacity, uint16_t command) {
+    if (buffer == nullptr || capacity < 7) return 0;
+    buffer[0] = 0xAB;
+    buffer[1] = 0x00;
+    buffer[2] = 0x04;
+    buffer[3] = 0xFF;
+    buffer[4] = static_cast<uint8_t>(command >> 8);
+    buffer[5] = 0x80;
+    buffer[6] = static_cast<uint8_t>(command & 0xFF);
+    return 7;
+}
+
 const char* ChronosProtocol::AppNameForIcon(uint8_t icon) {
     switch (icon) {
         case 0x01: return "Panggilan";
@@ -401,32 +635,89 @@ const char* ChronosProtocol::AppNameForIcon(uint8_t icon) {
     }
 }
 
-ChronchiManeuver ChronosProtocol::ParseManeuverFromText(const char* text) {
-    if (text == nullptr || text[0] == '\0') return ChronchiManeuver::Straight;
-    char upper[128] = {};
-    size_t i = 0;
-    while (text[i] != '\0' && i + 1 < sizeof(upper)) {
-        upper[i] = static_cast<char>(std::toupper(static_cast<unsigned char>(text[i])));
-        ++i;
-    }
-    upper[i] = '\0';
+ChronchiManeuver ChronosProtocol::ParseManeuverFromText(const char* text1, const char* text2) {
+    char upper[256] = {};
+    size_t out = 0;
+    auto append = [&upper, &out](const char* src) {
+        if (src == nullptr) return;
+        while (*src != '\0' && out + 2 < sizeof(upper)) {
+            upper[out++] = static_cast<char>(std::toupper(static_cast<unsigned char>(*src++)));
+        }
+        if (out + 1 < sizeof(upper)) {
+            upper[out++] = ' ';
+        }
+    };
+    append(text1);
+    append(text2);
+    upper[out] = '\0';
 
-    if (std::strstr(upper, "ROUNDABOUT") || std::strstr(upper, "BUNDARAN")) {
-        return ChronchiManeuver::Roundabout;
-    }
-    if (std::strstr(upper, "ARRIVE") || std::strstr(upper, "SAMPAI") ||
-        std::strstr(upper, "TIBA") || std::strstr(upper, "TUJUAN") ||
-        std::strstr(upper, "DESTINATION")) {
+    if (out <= 1) return ChronchiManeuver::Straight;
+
+    // 1. Arrive / Destination
+    if (std::strstr(upper, "ARRIVE") || std::strstr(upper, "ARRIVED") ||
+        std::strstr(upper, "DESTINATION") || std::strstr(upper, "REACHED") ||
+        std::strstr(upper, "SAMPAI") || std::strstr(upper, "TIBA") ||
+        std::strstr(upper, "TUJUAN")) {
         return ChronchiManeuver::Arrive;
     }
-    const bool left = std::strstr(upper, "LEFT") || std::strstr(upper, "KIRI");
-    const bool right = std::strstr(upper, "RIGHT") || std::strstr(upper, "KANAN");
-    const bool slight = std::strstr(upper, "SLIGHT") || std::strstr(upper, "KEEP") ||
-                        std::strstr(upper, "SERONG") || std::strstr(upper, "SEDIKIT") ||
-                        std::strstr(upper, "AGAK");
-    if (left && slight) return ChronchiManeuver::SlightLeft;
-    if (right && slight) return ChronchiManeuver::SlightRight;
-    if (left) return ChronchiManeuver::Left;
-    if (right) return ChronchiManeuver::Right;
+
+    // 2. Roundabout / U-turn
+    if (std::strstr(upper, "ROUNDABOUT") || std::strstr(upper, "BUNDARAN") ||
+        std::strstr(upper, "ROTARY") || std::strstr(upper, "CIRCLE") ||
+        std::strstr(upper, "U-TURN") || std::strstr(upper, "UTURN") ||
+        std::strstr(upper, "PUTAR BALIK") || std::strstr(upper, "BALIK ARAH") ||
+        std::strstr(upper, "PUTARAN")) {
+        return ChronchiManeuver::Roundabout;
+    }
+
+    // 3. Left vs Right
+    const bool has_left = (std::strstr(upper, "LEFT") != nullptr) ||
+                          (std::strstr(upper, "KIRI") != nullptr);
+    const bool has_right = (std::strstr(upper, "RIGHT") != nullptr) ||
+                           (std::strstr(upper, "KANAN") != nullptr);
+
+    const bool has_slight = (std::strstr(upper, "SLIGHT") != nullptr) ||
+                            (std::strstr(upper, "SERONG") != nullptr) ||
+                            (std::strstr(upper, "AGAK") != nullptr) ||
+                            (std::strstr(upper, "SEDIKIT") != nullptr) ||
+                            (std::strstr(upper, "KEEP") != nullptr) ||
+                            (std::strstr(upper, "TETAP") != nullptr) ||
+                            (std::strstr(upper, "LAJUR") != nullptr) ||
+                            (std::strstr(upper, "JALUR") != nullptr) ||
+                            (std::strstr(upper, "AMBIL") != nullptr) ||
+                            (std::strstr(upper, "BEAR") != nullptr) ||
+                            (std::strstr(upper, "FORK") != nullptr) ||
+                            (std::strstr(upper, "RAMP") != nullptr) ||
+                            (std::strstr(upper, "MERGE") != nullptr);
+
+    if (has_left && has_right) {
+        const char* p_left = std::strstr(upper, "KIRI");
+        if (!p_left) p_left = std::strstr(upper, "LEFT");
+
+        const char* p_right = std::strstr(upper, "KANAN");
+        if (!p_right) p_right = std::strstr(upper, "RIGHT");
+
+        if (p_left < p_right) {
+            return has_slight ? ChronchiManeuver::SlightLeft : ChronchiManeuver::Left;
+        } else {
+            return has_slight ? ChronchiManeuver::SlightRight : ChronchiManeuver::Right;
+        }
+    }
+
+    if (has_left) {
+        return has_slight ? ChronchiManeuver::SlightLeft : ChronchiManeuver::Left;
+    }
+
+    if (has_right) {
+        return has_slight ? ChronchiManeuver::SlightRight : ChronchiManeuver::Right;
+    }
+
+    // 4. Straight
+    if (std::strstr(upper, "STRAIGHT") || std::strstr(upper, "CONTINUE") ||
+        std::strstr(upper, "HEAD") || std::strstr(upper, "LURUS") ||
+        std::strstr(upper, "TERUS") || std::strstr(upper, "LANJUT")) {
+        return ChronchiManeuver::Straight;
+    }
+
     return ChronchiManeuver::Straight;
 }

@@ -33,6 +33,7 @@ private:
     void SetupUI_128x32();
     void SetupModeOverlay();
     void SetupChronchiOverlay();
+    void SetupMusicOverlay();
 
     // Chronchi helpers
     void ResetChronchiLayout();
@@ -43,9 +44,15 @@ private:
     void IdleBehavior(int base_eye_height);
     void ListeningBehavior(int base_eye_height);
     void SpeakingBehavior(int eye_height);
+    void MusicBehavior();
+    void UpdateClassicMusicAnimation();
+    void UpdateMusicVisualizer();
 
     // Constants
     static constexpr int kEyeSize = 14;
+    static constexpr int kEqBarCount = 5;
+    static constexpr int kClassicEqBarCount = 4;
+    static constexpr int kMusicEqBarCount = 9;
 
     // Hardware handles
     esp_lcd_panel_io_handle_t panel_io_ = nullptr;
@@ -64,9 +71,22 @@ private:
     lv_obj_t* content_left_ = nullptr;
     lv_obj_t* content_right_ = nullptr;
 
-    // Content labels
+    // Content labels & music animations
     lv_obj_t* emotion_label_ = nullptr;
     lv_obj_t* chat_message_label_ = nullptr;
+    lv_obj_t* classic_eq_container_ = nullptr;
+    lv_obj_t* classic_eq_bars_[kClassicEqBarCount] = {};
+    int classic_eq_heights_[kClassicEqBarCount] = {};
+    int classic_eq_targets_[kClassicEqBarCount] = {};
+
+    // Music overlay (dedicated 0.96" OLED 128x64 visualizer)
+    lv_obj_t* music_container_ = nullptr;
+    lv_obj_t* music_title_label_ = nullptr;
+    lv_obj_t* music_note_left_ = nullptr;
+    lv_obj_t* music_note_right_ = nullptr;
+    lv_obj_t* music_eq_bars_[kMusicEqBarCount] = {};
+    int music_eq_heights_[kMusicEqBarCount] = {};
+    int music_eq_targets_[kMusicEqBarCount] = {};
 
     // Mode overlay
     lv_obj_t* mode_overlay_ = nullptr;
@@ -88,6 +108,9 @@ private:
     lv_obj_t* left_eye_ = nullptr;
     lv_obj_t* right_eye_ = nullptr;
     lv_obj_t* mouth_ = nullptr;
+    lv_obj_t* eq_bars_[kEqBarCount] = {};
+    int eq_heights_[kEqBarCount] = {};
+    int eq_targets_[kEqBarCount] = {};
     lv_timer_t* face_timer_ = nullptr;
     FaceState face_state_ = FaceState::Idle;
 
@@ -98,6 +121,8 @@ private:
     int speak_mouth_current_ = 3;
     int speak_mouth_target_ = 3;
     uint32_t speak_last_update_ = 0;
+    uint32_t music_anim_last_update_ = 0;
+    int music_groove_phase_ = 0;
 
     bool chronchi_layout_initialized_ = false;
 };

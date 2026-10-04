@@ -37,11 +37,29 @@ std::string YouTubeAudioPoller::GetServerDomain() {
 }
 
 std::string YouTubeAudioPoller::GetBaseUrl() {
-    return "https://" + GetServerDomain();
+    std::string domain = GetServerDomain();
+    if (domain.rfind("http://", 0) == 0 || domain.rfind("https://", 0) == 0) {
+        return domain;
+    }
+    return "http://" + domain;
 }
 
 std::string YouTubeAudioPoller::GetStreamUrl() {
-    return "http://" + GetServerDomain();
+    std::string domain = GetServerDomain();
+    if (domain.rfind("http://", 0) == 0 || domain.rfind("https://", 0) == 0) {
+        return domain;
+    }
+    return "http://" + domain;
+}
+
+std::string YouTubeAudioPoller::GetCurrentTitle() const {
+    std::lock_guard<std::mutex> lock(const_cast<std::mutex&>(song_mutex_));
+    return current_title_;
+}
+
+std::string YouTubeAudioPoller::GetCurrentVideoId() const {
+    std::lock_guard<std::mutex> lock(const_cast<std::mutex&>(song_mutex_));
+    return current_video_id_;
 }
 
 YouTubeAudioPoller::YouTubeAudioPoller() {
@@ -66,7 +84,7 @@ void YouTubeAudioPoller::Start() {
     xTaskCreate([](void* arg) {
         static_cast<YouTubeAudioPoller*>(arg)->TaskLoop();
         vTaskDelete(NULL);
-    }, "yt_poller", 5632, this, 2, &task_handle_);
+    }, "yt_poller", 3584, this, 2, &task_handle_);
     ESP_LOGI(TAG, "YouTubeAudioPoller started");
 }
 
@@ -100,6 +118,7 @@ void YouTubeAudioPoller::Abort() {
 void YouTubeAudioPoller::TriggerFetch() {
     ESP_LOGI(TAG, "Fetch triggered externally");
     trigger_requested_ = true;
+    Application::GetInstance().GetAudioService().EnableWakeWordDetection(false);
 }
 
 void YouTubeAudioPoller::PlaySong(const std::string& video_id, const std::string& title) {
@@ -113,6 +132,7 @@ void YouTubeAudioPoller::PlaySong(const std::string& video_id, const std::string
         pending_title_ = title.empty() ? "YouTube Song" : title;
     }
     play_requested_ = true;
+    Application::GetInstance().GetAudioService().EnableWakeWordDetection(false);
 }
 
 void YouTubeAudioPoller::PlayQuery(const std::string& query) {
@@ -130,6 +150,25 @@ void YouTubeAudioPoller::PlayQuery(const std::string& query) {
         pending_query_ = query;
     }
     query_requested_ = true;
+    Application::GetInstance().GetAudioService().EnableWakeWordDetection(false);
+}
+
+static std::string ReadHttpBounded(Http* http, size_t max_bytes = 4096) {
+    if (http == nullptr) return "";
+    std::string body;
+    char chunk[256];
+    while (body.size() < max_bytes) {
+        int n = http->Read(chunk, sizeof(chunk));
+        if (n <= 0) break;
+        body.append(chunk, n);
+    }
+    return body;
+}
+
+static void DrainHttp(Http* http) {
+    if (http == nullptr) return;
+    char drain[128];
+    while (http->Read(drain, sizeof(drain)) > 0) {}
 }
 
 bool YouTubeAudioPoller::FetchDirect(const std::string& query, std::string& video_id, std::string& title) {
@@ -172,7 +211,7 @@ bool YouTubeAudioPoller::FetchDirect(const std::string& query, std::string& vide
         return false;
     }
 
-    std::string body = http->ReadAll();
+    std::string body = ReadHttpBounded(http.get(), 4096);
     http->Close();
 
     if (body.empty()) return false;
@@ -205,7 +244,7 @@ bool YouTubeAudioPoller::FetchCommands(int& cmd_id, std::string& video_id, std::
 
     std::string mac = SystemInfo::GetMacAddress();
     std::string chip = CONFIG_IDF_TARGET;
-    std::string url = GetBaseUrl() + "/api/device/audio/commands?mac=" + mac + "&chip=" + chip;
+    std::string url = GetBaseUrl() + "/api/audio/commands/" + mac;
 
     http->SetTimeout(10000);
     http->SetHeader("User-Agent", "ESP32-XiaoZhi");
@@ -226,7 +265,7 @@ bool YouTubeAudioPoller::FetchCommands(int& cmd_id, std::string& video_id, std::
         return false;
     }
 
-    std::string body = http->ReadAll();
+    std::string body = ReadHttpBounded(http.get(), 4096);
     http->Close();
 
     if (body.empty()) {
@@ -247,8 +286,8 @@ bool YouTubeAudioPoller::FetchCommands(int& cmd_id, std::string& video_id, std::
             cJSON* vid_item = cJSON_GetObjectItem(cmd, "video_id");
             cJSON* title_item = cJSON_GetObjectItem(cmd, "title");
 
-            if (cJSON_IsNumber(id_item) && cJSON_IsString(vid_item)) {
-                cmd_id = id_item->valueint;
+            if ((cJSON_IsNumber(id_item) || cJSON_IsString(id_item)) && cJSON_IsString(vid_item)) {
+                cmd_id = cJSON_IsNumber(id_item) ? id_item->valueint : atoi(id_item->valuestring);
                 video_id = vid_item->valuestring;
                 title = cJSON_IsString(title_item) ? title_item->valuestring : "YouTube Song";
                 found = true;
@@ -273,18 +312,7 @@ bool YouTubeAudioPoller::AckCommand(int cmd_id) {
 
     std::string mac = SystemInfo::GetMacAddress();
     std::string chip = CONFIG_IDF_TARGET;
-    std::string url = GetBaseUrl() + "/api/device/audio/ack";
-
-    cJSON* root = cJSON_CreateObject();
-    cJSON_AddNumberToObject(root, "command_id", cmd_id);
-    cJSON_AddStringToObject(root, "mac", mac.c_str());
-    cJSON_AddStringToObject(root, "chip", chip.c_str());
-    char* json_str = cJSON_PrintUnformatted(root);
-    std::string payload = json_str ? json_str : "";
-    if (json_str) {
-        free(json_str);
-    }
-    cJSON_Delete(root);
+    std::string url = GetBaseUrl() + "/api/audio/ack/" + std::to_string(cmd_id);
 
     http->SetTimeout(10000);
     http->SetHeader("Content-Type", "application/json");
@@ -293,17 +321,21 @@ bool YouTubeAudioPoller::AckCommand(int cmd_id) {
     http->SetHeader("X-Device-Mac", mac.c_str());
     http->SetHeader("X-Device-Chip", chip.c_str());
     http->SetHeader("Device-Chip", chip.c_str());
-    http->SetContent(std::move(payload));
 
     bool ok = http->Open("POST", url);
     if (ok) {
-        http->ReadAll();
+        DrainHttp(http.get());
     }
     http->Close();
     return ok;
 }
 
 bool YouTubeAudioPoller::ReportStatus(const std::string& status, const std::string& video_id) {
+    if (heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT) < 40000) {
+        ESP_LOGD(TAG, "Skipping status reporting to conserve internal SRAM for streaming");
+        return false;
+    }
+
     auto network = Board::GetInstance().GetNetwork();
     if (network == nullptr) {
         return false;
@@ -344,7 +376,7 @@ bool YouTubeAudioPoller::ReportStatus(const std::string& status, const std::stri
     ESP_LOGI(TAG, "ReportStatus: reporting \"%s\" for video %s to %s", status.c_str(), video_id.c_str(), url.c_str());
     bool ok = http->Open("POST", url);
     if (ok) {
-        http->ReadAll();
+        DrainHttp(http.get());
     }
     http->Close();
     return ok;
@@ -355,12 +387,16 @@ void YouTubeAudioPoller::StreamAudio(const std::string& video_id, const std::str
     auto& app = Application::GetInstance();
     auto display = Board::GetInstance().GetDisplay();
 
+    {
+        std::lock_guard<std::mutex> lock(song_mutex_);
+        current_video_id_ = video_id;
+        current_title_ = title;
+    }
     is_playing_ = true;
     abort_requested_ = false;
     app.ResetAborted();
 
-    ESP_LOGI(TAG, "Starting YouTube stream: %s (%s)", title.c_str(), video_id.c_str());
-    ReportStatus("playing", video_id);
+    ESP_LOGI(TAG, ">> DETEKSI: Mulai memutar lagu YouTube: \"%s\" (vid=%s) <<", title.c_str(), video_id.c_str());
     app.GetAudioService().EnableWakeWordDetection(false);
 
     // Wait for TTS speaking to finish (max 8 sec) before opening stream
@@ -378,6 +414,11 @@ void YouTubeAudioPoller::StreamAudio(const std::string& video_id, const std::str
 
     if (abort_requested_.load()) {
         is_playing_ = false;
+        {
+            std::lock_guard<std::mutex> lock(song_mutex_);
+            current_video_id_.clear();
+            current_title_.clear();
+        }
         app.SetDeviceState(kDeviceStateIdle);
         return;
     }
@@ -390,11 +431,22 @@ void YouTubeAudioPoller::StreamAudio(const std::string& video_id, const std::str
     play_requested_ = false;
     query_requested_ = false;
 
+    // Report playing status now that TTS speaking is done and audio channel is closed
+    ReportStatus("playing", video_id);
+
     std::string display_title = "[PLAY] " + title;
     if (display != nullptr) {
         display->SetChatMessage("assistant", display_title.c_str());
-        display->ShowNotification(display_title.c_str(), 10000);
+        display->SetStatus("Memutar Lagu");
+        display->SetEmotion("music");
+        display->SetFaceState(FaceState::Music);
+        display->ShowNotification(display_title.c_str(), 5000);
     }
+
+    // Set performance mode first to stabilize CPU frequency at 160MHz before codec I2C init
+    Board::GetInstance().SetPowerSaveLevel(PowerSaveLevel::PERFORMANCE);
+    esp_wifi_set_ps(WIFI_PS_NONE);
+    vTaskDelay(pdMS_TO_TICKS(30));
 
     auto codec = Board::GetInstance().GetAudioCodec();
     if (codec != nullptr) {
@@ -404,8 +456,6 @@ void YouTubeAudioPoller::StreamAudio(const std::string& video_id, const std::str
         ESP_LOGI(TAG, "Audio playback using current device volume: %d%%", codec->output_volume());
     }
 
-    Board::GetInstance().SetPowerSaveLevel(PowerSaveLevel::PERFORMANCE);
-
     // Reset decoder to clear any leftover TTS audio in the queue
     app.GetAudioService().ResetDecoder();
     vTaskDelay(pdMS_TO_TICKS(50));
@@ -413,7 +463,13 @@ void YouTubeAudioPoller::StreamAudio(const std::string& video_id, const std::str
     auto network = Board::GetInstance().GetNetwork();
     if (network == nullptr) {
         is_playing_ = false;
+        {
+            std::lock_guard<std::mutex> lock(song_mutex_);
+            current_video_id_.clear();
+            current_title_.clear();
+        }
         Board::GetInstance().SetPowerSaveLevel(PowerSaveLevel::LOW_POWER);
+        esp_wifi_set_ps(WIFI_PS_MIN_MODEM);
         app.SetDeviceState(kDeviceStateIdle);
         return;
     }
@@ -426,29 +482,29 @@ void YouTubeAudioPoller::StreamAudio(const std::string& video_id, const std::str
     }
     size_t free_sram = heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
 
-    // Adaptive hybrid bitrate: 24k (max) down to 6k (min)
+    // Strictly 8k - 16k range as requested for optimal ESP32-C3 stability
     std::string current_bitrate = "12k";
-    if (rssi >= -60 && free_sram >= 48000) {
-        current_bitrate = "24k";
-    } else if (rssi >= -68 && free_sram >= 40000) {
+    if (rssi >= -68 && free_sram >= 36000) {
         current_bitrate = "16k";
-    } else if (rssi >= -76 && free_sram >= 32000) {
+    } else if (rssi >= -78 && free_sram >= 28000) {
         current_bitrate = "12k";
-    } else if (rssi >= -84 && free_sram >= 24000) {
-        current_bitrate = "8k";
     } else {
-        current_bitrate = "6k";
+        current_bitrate = "8k";
     }
-    ESP_LOGI(TAG, "Adaptive Profile Selected: RSSI=%d dBm, FreeSRAM=%u B -> Bitrate=%s (Adaptive range: 6k - 24k)",
+    ESP_LOGI(TAG, "Adaptive Profile Selected: RSSI=%d dBm, FreeSRAM=%u B -> Bitrate=%s (Range: 8k - 16k)",
              rssi, (unsigned int)free_sram, current_bitrate.c_str());
 
     static const uint8_t OGGS_MAGIC[4] = {'O', 'g', 'g', 'S'};
-    static const size_t kOggBufCap = 4096;
+    static const size_t kOggBufCap = 2048;
     auto ogg_buf = std::make_unique<uint8_t[]>(kOggBufCap);
 
     size_t total_bytes_streamed = 0;
     int frames_pushed = 0;
     int downshift_retries = 0;
+    int eof_retries = 0;
+    static const int kMaxRetries = 3;
+    int64_t last_rssi_check_us = 0;
+    int8_t live_rssi = rssi;
 
     while (running_.load() && !abort_requested_.load()) {
         auto http = network->CreateHttp(0);
@@ -473,13 +529,15 @@ void YouTubeAudioPoller::StreamAudio(const std::string& video_id, const std::str
         }
         std::string stream_url(url_buf);
 
-        http->SetTimeout(15000);
+        http->SetTimeout(15000); // 15s timeout to tolerate network jitter & backend transcoding latency
         http->SetHeader("User-Agent", "ESP32-XiaoZhi");
         http->SetHeader("Device-Id", mac.c_str());
         http->SetHeader("X-Device-Mac", mac.c_str());
         http->SetHeader("X-Device-Chip", chip.c_str());
         http->SetHeader("Device-Chip", chip.c_str());
 
+        Board::GetInstance().SetPowerSaveLevel(PowerSaveLevel::PERFORMANCE);
+        esp_wifi_set_ps(WIFI_PS_NONE);
         ESP_LOGI(TAG, "Connecting to stream URL: %s", stream_url.c_str());
         if (!http->Open("GET", stream_url)) {
             ESP_LOGE(TAG, "Failed to open stream URL: %s", stream_url.c_str());
@@ -488,9 +546,9 @@ void YouTubeAudioPoller::StreamAudio(const std::string& video_id, const std::str
                 active_http_ = nullptr;
             }
             http->Close();
-            if (frames_pushed > 0 && downshift_retries < 2 && !abort_requested_.load()) {
+            if (frames_pushed > 0 && downshift_retries < kMaxRetries && !abort_requested_.load()) {
                 downshift_retries++;
-                vTaskDelay(pdMS_TO_TICKS(500));
+                vTaskDelay(pdMS_TO_TICKS(500 * downshift_retries));
                 continue;
             }
             break;
@@ -503,9 +561,9 @@ void YouTubeAudioPoller::StreamAudio(const std::string& video_id, const std::str
                 active_http_ = nullptr;
             }
             http->Close();
-            if (frames_pushed > 0 && downshift_retries < 2 && !abort_requested_.load()) {
+            if (frames_pushed > 0 && downshift_retries < kMaxRetries && !abort_requested_.load()) {
                 downshift_retries++;
-                vTaskDelay(pdMS_TO_TICKS(500));
+                vTaskDelay(pdMS_TO_TICKS(500 * downshift_retries));
                 continue;
             }
             break;
@@ -520,36 +578,46 @@ void YouTubeAudioPoller::StreamAudio(const std::string& video_id, const std::str
         bool seen_tags = false;
         int sample_rate = 24000;
         bool need_downshift = false;
-        int starvation_count = 0;
+        int64_t last_audio_active_us = esp_timer_get_time();
+        size_t session_bytes = 0;
+        int session_frames = 0;
+
+        // Dynamic Pre-Buffer (Jitter Buffer):
+        // 4 frames (~240ms) on good signal, 6 frames (~360ms) on weaker signal or reconnect
+        size_t prebuffer_target = (live_rssi >= -75 && frames_pushed == 0) ? 4 : 6;
+        std::vector<std::unique_ptr<AudioStreamPacket>> prebuffer;
+        bool is_prebuffering = true;
 
         try {
             while (running_.load() && !abort_requested_.load()) {
-                // Adaptive Buffer Health Check
-                size_t q_size = app.GetAudioService().GetDecodeQueueSize();
-                if (frames_pushed > 20 && q_size == 0) {
-                    starvation_count++;
-                    if (starvation_count >= 5) {
-                        if (current_bitrate == "24k") {
-                            current_bitrate = "16k";
-                            need_downshift = true;
-                        } else if (current_bitrate == "16k") {
-                            current_bitrate = "12k";
-                            need_downshift = true;
-                        } else if (current_bitrate == "12k") {
-                            current_bitrate = "8k";
-                            need_downshift = true;
-                        } else if (current_bitrate == "8k") {
-                            current_bitrate = "6k";
-                            need_downshift = true;
-                        }
-                        if (need_downshift) {
-                            ESP_LOGW(TAG, "Buffer starvation detected! Downshifting to %s at %.2fs to prevent stuttering",
-                                     current_bitrate.c_str(), frames_pushed * 0.060f);
-                            break;
-                        }
+                int64_t now_us = esp_timer_get_time();
+                bool playback_idle = app.GetAudioService().IsPlaybackIdle();
+
+                // Check live Wi-Fi signal periodically without lag
+                if (now_us - last_rssi_check_us > 5000000) {
+                    last_rssi_check_us = now_us;
+                    wifi_ap_record_t live_ap;
+                    if (esp_wifi_sta_get_ap_info(&live_ap) == ESP_OK) {
+                        live_rssi = live_ap.rssi;
                     }
-                } else if (q_size >= 3) {
-                    starvation_count = 0;
+                }
+
+                // 1. Speaker Starvation Watchdog (Fast Drop):
+                if (frames_pushed > 10) {
+                    if (!playback_idle) {
+                        last_audio_active_us = now_us;
+                    } else if (now_us - last_audio_active_us > 2500000) { // 2.5s speaker silence
+                        ESP_LOGW(TAG, "Audio starvation detected! Speaker is silent at br=%s, auto-recovering...", current_bitrate.c_str());
+                        if (current_bitrate == "16k") current_bitrate = "12k";
+                        else if (current_bitrate == "12k") current_bitrate = "8k";
+                        else current_bitrate = "8k";
+
+                        need_downshift = true;
+                        if (current_bitrate == "8k") downshift_retries++;
+                        ESP_LOGW(TAG, "Watchdog recovered stream by downshifting/reconnecting to %s at %.2fs",
+                                 current_bitrate.c_str(), frames_pushed * 0.060f);
+                        break;
+                    }
                 }
 
                 size_t avail = kOggBufCap - ogg_len;
@@ -567,36 +635,48 @@ void YouTubeAudioPoller::StreamAudio(const std::string& video_id, const std::str
                     }
                     avail = kOggBufCap - ogg_len;
                 }
-                int to_read = (int)std::min((size_t)512, avail);
+                int to_read = (int)std::min((size_t)1024, avail);
                 int n = http->Read(reinterpret_cast<char*>(ogg_buf.get() + ogg_len), to_read);
                 if (n < 0) {
-                    ESP_LOGW(TAG, "HTTP read error or stream closed (ret=%d, total=%zu, frames=%d)",
-                             n, total_bytes_streamed, frames_pushed);
+                    ESP_LOGW(TAG, "HTTP read error or stream closed (ret=%d, total=%u, frames=%d)",
+                             n, (unsigned int)total_bytes_streamed, frames_pushed);
                     if (frames_pushed > 10) {
-                        if (current_bitrate != "6k") {
-                            if (current_bitrate == "24k") current_bitrate = "16k";
-                            else if (current_bitrate == "16k") current_bitrate = "12k";
-                            else if (current_bitrate == "12k") current_bitrate = "8k";
-                            else current_bitrate = "6k";
-                            need_downshift = true;
-                            ESP_LOGW(TAG, "Connection interrupted mid-stream! Downshifting to %s at %.2fs",
-                                     current_bitrate.c_str(), frames_pushed * 0.060f);
-                        } else if (downshift_retries < 2) {
-                            need_downshift = true;
-                            downshift_retries++;
-                            ESP_LOGW(TAG, "Connection interrupted at 6k! Reconnecting at %.2fs",
-                                     frames_pushed * 0.060f);
-                        }
+                        if (current_bitrate == "16k") current_bitrate = "12k";
+                        else if (current_bitrate == "12k") current_bitrate = "8k";
+                        else current_bitrate = "8k";
+
+                        need_downshift = true;
+                        if (current_bitrate == "8k") downshift_retries++;
+                        ESP_LOGW(TAG, "Connection interrupted mid-stream! Downshifting to %s at %.2fs",
+                                 current_bitrate.c_str(), frames_pushed * 0.060f);
+                    } else if (downshift_retries < kMaxRetries) {
+                        need_downshift = true;
+                        downshift_retries++;
                     }
                     break;
                 }
                 if (n == 0) {
-                    ESP_LOGI(TAG, "Stream EOF reached (total=%zu, frames=%d)", total_bytes_streamed, frames_pushed);
+                    ESP_LOGI(TAG, "Stream EOF reached (session_bytes=%u, session_frames=%d, total=%u, frames_pushed=%d)",
+                             (unsigned int)session_bytes, session_frames, (unsigned int)total_bytes_streamed, frames_pushed);
+                    // YouTube CDN sometimes drops TCP prematurely after 1-2 minutes.
+                    // Auto-resume from offset start_sec if frames were pushed.
+                    if (frames_pushed > 0 && session_bytes > 0 && eof_retries < 2 && !abort_requested_.load()) {
+                        eof_retries++;
+                        need_downshift = true;
+                        ESP_LOGI(TAG, "Potential premature EOF from YouTube/CDN! Auto-resuming at %.2fs (probe %d/2)...",
+                                 frames_pushed * 0.060f, eof_retries);
+                    } else {
+                        if (session_bytes == 0 && frames_pushed > 0) {
+                            ESP_LOGI(TAG, "Confirmed end of audio stream at %.2fs", frames_pushed * 0.060f);
+                        }
+                        need_downshift = false;
+                    }
                     break;
                 }
 
                 ogg_len += n;
                 total_bytes_streamed += n;
+                session_bytes += n;
 
                 // Demux Ogg pages incrementally
                 while (ogg_len >= 27) {
@@ -690,18 +770,39 @@ void YouTubeAudioPoller::StreamAudio(const std::string& video_id, const std::str
                             break;
                         }
 
-                        // Push raw Opus frame to decoder queue (blocking with true for flow control)
+                        // Push raw Opus frame (decode directly at codec output sample rate: 16kHz)
                         auto packet = std::make_unique<AudioStreamPacket>();
-                        packet->sample_rate = (sample_rate > 0) ? sample_rate : 16000;
+                        auto codec = Board::GetInstance().GetAudioCodec();
+                        packet->sample_rate = (codec != nullptr) ? codec->output_sample_rate() : 16000;
                         packet->frame_duration = 60;
                         packet->payload.assign(pkt_ptr, pkt_ptr + pkt_len);
-                        if (!abort_requested_.load()) {
+
+                        if (is_prebuffering) {
+                            prebuffer.push_back(std::move(packet));
+                            if (prebuffer.size() >= prebuffer_target) {
+                                ESP_LOGI(TAG, "Pre-buffer ready (%u frames, ~%u ms), flushing to decoder (br=%s)",
+                                         (unsigned int)prebuffer.size(), (unsigned int)(prebuffer.size() * 60), current_bitrate.c_str());
+                                for (auto& p : prebuffer) {
+                                    app.GetAudioService().PushPacketToDecodeQueue(std::move(p), true);
+                                    frames_pushed++;
+                                    session_frames++;
+                                }
+                                prebuffer.clear();
+                                is_prebuffering = false;
+                            }
+                        } else {
                             app.GetAudioService().PushPacketToDecodeQueue(std::move(packet), true);
                             frames_pushed++;
+                            session_frames++;
                             if (frames_pushed == 1 || frames_pushed % 50 == 0) {
-                                ESP_LOGI(TAG, "Audio frame #%d pushed to decoder (len=%zu, q_size=%zu)",
-                                         frames_pushed, pkt_len, app.GetAudioService().GetDecodeQueueSize());
+                                ESP_LOGI(TAG, "Audio frame #%d pushed to decoder (len=%u, q_size=%u)",
+                                         frames_pushed, (unsigned int)pkt_len, (unsigned int)app.GetAudioService().GetDecodeQueueSize());
                             }
+                        }
+
+                        if (session_frames >= 20) {
+                            downshift_retries = 0;
+                            eof_retries = 0;
                         }
                     }
 
@@ -716,6 +817,16 @@ void YouTubeAudioPoller::StreamAudio(const std::string& video_id, const std::str
             }
         } catch (const std::exception& e) {
             ESP_LOGE(TAG, "StreamAudio exception: %s", e.what());
+        }
+
+        // Flush remaining prebuffer if stream interrupted before reaching prebuffer target
+        if (!prebuffer.empty()) {
+            for (auto& p : prebuffer) {
+                app.GetAudioService().PushPacketToDecodeQueue(std::move(p), true);
+                frames_pushed++;
+                session_frames++;
+            }
+            prebuffer.clear();
         }
 
         {
@@ -733,40 +844,61 @@ void YouTubeAudioPoller::StreamAudio(const std::string& video_id, const std::str
 
     bool was_aborted = abort_requested_.load();
     if (!was_aborted) {
-        app.GetAudioService().WaitForPlaybackIdle(5000);
+        int wait_ms = 0;
+        while (!app.GetAudioService().IsPlaybackIdle() && wait_ms < 5000) {
+            vTaskDelay(pdMS_TO_TICKS(100));
+            wait_ms += 100;
+        }
     } else {
         app.GetAudioService().ResetDecoder();
     }
 
-    // Cleanly restore device state and UI
-    app.SetDeviceState(kDeviceStateIdle);
-    app.GetAudioService().EnableWakeWordDetection(true);
-
-    if (display != nullptr) {
-        display->SetChatMessage("assistant", "");
-        display->SetChatMessage("system", "");
-        display->SetStatus(Lang::Strings::STANDBY);
-        display->SetEmotion("neutral");
-        display->SetFaceState(FaceState::Idle);
+    // Set is_playing_ to false immediately so device state logic knows playback has ended
+    is_playing_ = false;
+    {
+        std::lock_guard<std::mutex> lock(song_mutex_);
+        current_video_id_.clear();
+        current_title_.clear();
     }
 
-    Board::GetInstance().SetPowerSaveLevel(PowerSaveLevel::LOW_POWER);
+    if (!was_aborted) {
+        ESP_LOGI(TAG, ">> DETEKSI: Lagu YouTube \"%s\" SELESAI DIPUTAR secara normal <<", title.c_str());
+        if (display != nullptr) {
+            display->ShowNotification("Lagu YouTube Selesai", 3000);
+            display->SetChatMessage("assistant", "");
+            display->SetChatMessage("system", "");
+            display->SetStatus(Lang::Strings::STANDBY);
+            display->SetEmotion("neutral");
+            display->SetFaceState(FaceState::Idle);
+        }
+    } else {
+        ESP_LOGI(TAG, ">> DETEKSI: Lagu YouTube \"%s\" DIHENTIKAN <<", title.c_str());
+        if (display != nullptr) {
+            display->ShowNotification("Lagu Dihentikan", 3000);
+            display->SetChatMessage("assistant", "");
+            display->SetChatMessage("system", "");
+            display->SetStatus(Lang::Strings::STANDBY);
+            display->SetEmotion("neutral");
+            display->SetFaceState(FaceState::Idle);
+        }
+    }
 
+    // Release the 3KB OGG buffer immediately so heap contiguous memory expands
+    ogg_buf.reset();
+
+    // 1. Report playback end status via lightweight HTTP while WakeNet is not loaded (free SRAM > 35KB)
     std::string end_status = was_aborted ? "stopped" : "finished";
     ReportStatus(end_status, video_id);
+    vTaskDelay(pdMS_TO_TICKS(150));
 
-    is_playing_ = false;
+    // 2. Cleanly restore device state to Idle/Standby
+    app.SetDeviceState(kDeviceStateIdle);
+    Board::GetInstance().SetPowerSaveLevel(PowerSaveLevel::LOW_POWER);
+    esp_wifi_set_ps(WIFI_PS_MIN_MODEM);
+    vTaskDelay(pdMS_TO_TICKS(100));
 
-    // Otomatis langsung masuk ke mode Listening jika lagu selesai secara normal (bukan di-stop manual)
-    if (!was_aborted) {
-        ESP_LOGI(TAG, "Lagu selesai diputar secara normal, otomatis masuk ke mode LISTENING...");
-        vTaskDelay(pdMS_TO_TICKS(500));
-        app.ToggleChatState();
-    } else {
-        // Jika dihentikan manual oleh user, kembalikan status ke IDLE / STANDBY
-        // dan aktifkan kembali Wake Word detection
-        app.SetDeviceState(kDeviceStateIdle);
-    }
+    // 3. Re-enable WakeWord detection in clean, unfragmented memory
+    app.GetAudioService().EnableWakeWordDetection(true);
 }
 
 void YouTubeAudioPoller::TaskLoop() {
@@ -803,24 +935,49 @@ void YouTubeAudioPoller::TaskLoop() {
                 q = pending_query_;
             }
             if (!q.empty()) {
+                is_fetching_ = true;
+                auto& app = Application::GetInstance();
+                bool was_wake_word = app.GetAudioService().IsWakeWordRunning();
+                if (was_wake_word) {
+                    ESP_LOGI(TAG, "Temporarily stopping WakeNet to free SRAM for HTTP query");
+                    app.GetAudioService().EnableWakeWordDetection(false);
+                }
+
                 ESP_LOGI(TAG, "Searching & streaming song query: \"%s\"", q.c_str());
                 std::string vid, tit;
-                if (FetchDirect(q, vid, tit)) {
+                bool found = FetchDirect(q, vid, tit);
+                is_fetching_ = false;
+
+                if (found) {
                     StreamAudio(vid, tit);
+                } else if (was_wake_word && app.GetDeviceState() == kDeviceStateIdle) {
+                    app.GetAudioService().EnableWakeWordDetection(true);
                 }
             }
         }
         // Fallback queue trigger
         else if (trigger_requested_.exchange(false)) {
+            is_fetching_ = true;
+            auto& app = Application::GetInstance();
+            bool was_wake_word = app.GetAudioService().IsWakeWordRunning();
+            if (was_wake_word) {
+                ESP_LOGI(TAG, "Temporarily stopping WakeNet to free SRAM for command fetch");
+                app.GetAudioService().EnableWakeWordDetection(false);
+            }
+
             int cmd_id = 0;
             std::string video_id;
             std::string title;
+            bool found = FetchCommands(cmd_id, video_id, title);
+            is_fetching_ = false;
 
-            if (FetchCommands(cmd_id, video_id, title)) {
+            if (found) {
                 ESP_LOGI(TAG, "Playing requested YouTube song (1 song only): id=%d, title=\"%s\", vid=%s",
                          cmd_id, title.c_str(), video_id.c_str());
                 AckCommand(cmd_id);
                 StreamAudio(video_id, title);
+            } else if (was_wake_word && app.GetDeviceState() == kDeviceStateIdle) {
+                app.GetAudioService().EnableWakeWordDetection(true);
             }
         }
     }

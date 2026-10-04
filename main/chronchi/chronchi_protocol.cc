@@ -160,7 +160,10 @@ ChronchiManeuver ParseManeuver(const char* value) {
     // Google Maps commonly uses TURN_LEFT, turn-left, KEEP_LEFT, and
     // ROUNDABOUT_EXIT. Indonesian instructions are accepted as well so the
     // display remains compatible when the bridge sends a localized phrase.
-    if (HasManeuverToken(text, "ROUNDABOUT") || HasManeuverToken(text, "BUNDARAN")) {
+    if (HasManeuverToken(text, "ROUNDABOUT") || HasManeuverToken(text, "BUNDARAN") ||
+        HasManeuverToken(text, "U_TURN") || HasManeuverToken(text, "UTURN") ||
+        HasManeuverToken(text, "PUTAR_BALIK") || HasManeuverToken(text, "BALIK_ARAH") ||
+        HasManeuverToken(text, "PUTARAN")) {
         return ChronchiManeuver::Roundabout;
     }
     if (HasManeuverToken(text, "ARRIVE") || HasManeuverToken(text, "ARRIVAL") ||
@@ -450,6 +453,7 @@ ChronchiProtocolResult ChronchiProtocol::ParseBufferedJson(ChronchiPacketType pa
                 break;
             }
             state_.ApplyScreen(screen);
+            ChronchiAlert::GetInstance().VibrateNotification();
             break;
         }
         case ChronchiPacketType::Navigation: {
@@ -493,6 +497,7 @@ ChronchiProtocolResult ChronchiProtocol::ParseBufferedJson(ChronchiPacketType pa
             char action[24] = {};
             Uppercase(action, sizeof(action), String(root, "action"));
             if (std::strcmp(action, "DISMISS") == 0) {
+                ChronchiAlert::GetInstance().StopAlert();
                 state_.DismissTransient();
             } else if (std::strcmp(action, "NAVIGATION_STOP") == 0) {
                 state_.StopNavigation();

@@ -152,7 +152,7 @@ void ChronchiBle::BuildIdentity() {
         return;
     }
     std::snprintf(device_id_, sizeof(device_id_), "CH-%02X%02X", mac[4], mac[5]);
-    std::snprintf(device_name_, sizeof(device_name_), "Chronchi-%02X%02X", mac[4], mac[5]);
+    std::snprintf(device_name_, sizeof(device_name_), "Chronos-%02X%02X", mac[4], mac[5]);
 }
 
 esp_err_t ChronchiBle::Initialize() {
@@ -246,9 +246,7 @@ void ChronchiBle::OnSync() {
 void ChronchiBle::Advertise() {
     ble_hs_adv_fields fields = {};
     fields.flags = BLE_HS_ADV_F_DISC_GEN | BLE_HS_ADV_F_BREDR_UNSUP;
-    const bool chronos_adv = adv_toggle_.load();
-    const ble_uuid128_t* active_uuid = chronos_adv ? &kChronosServiceUuid : &kServiceUuid;
-    fields.uuids128 = const_cast<ble_uuid128_t*>(active_uuid);
+    fields.uuids128 = const_cast<ble_uuid128_t*>(&kChronosServiceUuid);
     fields.num_uuids128 = 1;
     fields.uuids128_is_complete = 1;
     int result = ble_gap_adv_set_fields(&fields);
@@ -273,13 +271,12 @@ void ChronchiBle::Advertise() {
     ble_gap_adv_params parameters = {};
     parameters.conn_mode = BLE_GAP_CONN_MODE_UND;
     parameters.disc_mode = BLE_GAP_DISC_MODE_GEN;
-    parameters.itvl_min = 0x00A0; // 100 ms (coexistence friendly)
+    parameters.itvl_min = 0x00A0; // 100 ms
     parameters.itvl_max = 0x0140; // 200 ms
-    result = ble_gap_adv_start(address_type, nullptr, 1000,
+    result = ble_gap_adv_start(address_type, nullptr, BLE_HS_FOREVER,
                                &parameters, GapEvent, this);
     if (result == 0) {
-        ESP_LOGI(kTag, "Advertising %s as '%s'",
-                 chronos_adv ? "Chronos NUS" : "ESPBridge V1", device_name_);
+        ESP_LOGI(kTag, "Advertising Chronos NUS as '%s'", device_name_);
     } else {
         ESP_LOGE(kTag, "Advertising start failed: rc=%d", result);
     }
@@ -548,12 +545,23 @@ void ChronchiBle::SendChronosHandshake() {
     const size_t info_len = ChronosProtocol::BuildInfoPacket(buffer, sizeof(buffer));
     if (info_len > 0) {
         NotifyChronos(buffer, info_len);
+        vTaskDelay(pdMS_TO_TICKS(50));
     }
     const size_t bat_len = ChronosProtocol::BuildBatteryPacket(buffer, sizeof(buffer), 85, false);
     if (bat_len > 0) {
         NotifyChronos(buffer, bat_len);
+        vTaskDelay(pdMS_TO_TICKS(50));
     }
-    ESP_LOGI(kTag, "Chronos handshake sent");
+    const size_t req_bat_len = ChronosProtocol::BuildNotifyBatteryPacket(buffer, sizeof(buffer), true);
+    if (req_bat_len > 0) {
+        NotifyChronos(buffer, req_bat_len);
+        vTaskDelay(pdMS_TO_TICKS(50));
+    }
+    const size_t sync_len = ChronosProtocol::BuildSyncRequestPacket(buffer, sizeof(buffer));
+    if (sync_len > 0) {
+        NotifyChronos(buffer, sync_len);
+    }
+    ESP_LOGI(kTag, "Chronos complete handshake sent (info, bat, req_bat, sync)");
 }
 
 bool ChronchiBle::NotifyResponse(const PendingResponse& response) {
@@ -620,6 +628,28 @@ void ChronchiBle::Poll() {
         }
     }
 
+    // Check if Chronos app requested ESP device specs (0xCA)
+    if (chronos_protocol_.ConsumeSendEspRequest()) {
+        uint8_t esp_buf[300] = {};
+        const size_t esp_len = ChronosProtocol::BuildEspPacket(esp_buf, sizeof(esp_buf));
+        if (esp_len > 0) {
+            NotifyChronos(esp_buf, esp_len);
+            ESP_LOGI(kTag, "Sent ESP device info to Chronos app (%u bytes)", static_cast<unsigned>(esp_len));
+        }
+    }
+
+    // Periodic battery update to Chronos app (every 30 seconds)
+    static int64_t last_bat_sync_us = 0;
+    const int64_t now_us = esp_timer_get_time();
+    if (chronos_subscribed_.load() && (last_bat_sync_us == 0 || now_us - last_bat_sync_us >= 30 * 1000 * 1000LL)) {
+        last_bat_sync_us = now_us;
+        uint8_t bat_buf[16] = {};
+        const size_t bat_len = ChronosProtocol::BuildBatteryPacket(bat_buf, sizeof(bat_buf), 85, false);
+        if (bat_len > 0) {
+            NotifyChronos(bat_buf, bat_len);
+        }
+    }
+
     PendingResponse response = {};
     {
         std::lock_guard<std::mutex> lock(response_mutex_);
@@ -667,4 +697,31 @@ void ChronchiBle::Stop() {
     g_instance = nullptr;
 
     ESP_LOGI(kTag, "BLE stopped and resources freed");
+}
+
+bool ChronchiBle::TriggerCameraCapture() {
+    if (!chronos_subscribed_.load()) return false;
+    uint8_t buffer[16] = {};
+    const size_t len = ChronosProtocol::BuildCameraCapturePacket(buffer, sizeof(buffer));
+    if (len == 0) return false;
+    ESP_LOGI(kTag, "Sending Chronos camera shutter capture packet");
+    return NotifyChronos(buffer, len);
+}
+
+bool ChronchiBle::SendMusicControl(uint16_t command) {
+    if (!chronos_subscribed_.load()) return false;
+    uint8_t buffer[16] = {};
+    const size_t len = ChronosProtocol::BuildMusicControlPacket(buffer, sizeof(buffer), command);
+    if (len == 0) return false;
+    ESP_LOGI(kTag, "Sending Chronos music control 0x%04X", command);
+    return NotifyChronos(buffer, len);
+}
+
+bool ChronchiBle::FindPhone(bool state) {
+    if (!chronos_subscribed_.load()) return false;
+    uint8_t buffer[16] = {};
+    const size_t len = ChronosProtocol::BuildFindPhonePacket(buffer, sizeof(buffer), state);
+    if (len == 0) return false;
+    ESP_LOGI(kTag, "Sending Chronos find phone packet: state=%d", state ? 1 : 0);
+    return NotifyChronos(buffer, len);
 }

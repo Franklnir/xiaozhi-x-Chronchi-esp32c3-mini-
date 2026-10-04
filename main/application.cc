@@ -48,7 +48,8 @@ bool IsLocalSongStopCommand(const std::string& lowered_text) {
         return lowered_text.find(token) != std::string::npos;
     };
     return has("stop") || has("berhenti") || has("hentikan") || has("henti") ||
-           has("pause") || has("cukup");
+           has("pause") || has("cukup") || has("matikan lagu") || has("matikan musik") ||
+           has("stop lagu") || has("stop musik") || has("jangan putar");
 }
 
 bool ContainsToken(const std::string& lowered_text, std::initializer_list<const char*> tokens) {
@@ -208,7 +209,7 @@ constexpr int64_t kWifiResetConfirmWindowUs = 15LL * 1000000LL;
 constexpr int64_t kWakeWordStartupSuppressUs = 3LL * 1000000LL;
 constexpr int64_t kWakeWordDebounceUs = 2LL * 1000000LL;
 constexpr int64_t kWakeWordCooldownAfterCloseUs = 2LL * 1000000LL;
-constexpr int64_t kListeningAutoStopGraceUs = 1500LL * 1000000LL;
+constexpr int64_t kListeningAutoStopGraceUs = 2500LL * 1000LL;
 constexpr int64_t kListeningMaxDurationUs = 30LL * 1000000LL;
 
 } // namespace
@@ -460,9 +461,17 @@ void Application::Run() {
         }
 
         if (bits & MAIN_EVENT_SEND_AUDIO) {
+            static int64_t last_send_fail_log_us = 0;
             while (auto packet = audio_service_.PopPacketFromSendQueue()) {
                 if (protocol_ && !protocol_->SendAudio(std::move(packet))) {
-                    ESP_LOGW(TAG, "SendAudio failed (channel_open=%d)", protocol_->IsAudioChannelOpened());
+                    int64_t now_us = esp_timer_get_time();
+                    if (now_us - last_send_fail_log_us > 2000000) {
+                        last_send_fail_log_us = now_us;
+                        ESP_LOGW(TAG, "SendAudio failed (channel_open=%d)", protocol_->IsAudioChannelOpened());
+                    }
+                    // Drop remaining packets to prevent stalling OpusCodecTask
+                    while (audio_service_.PopPacketFromSendQueue())
+                        ;
                     break;
                 }
             }
@@ -470,9 +479,7 @@ void Application::Run() {
 
         if (bits & MAIN_EVENT_WAKE_WORD_DETECTED) {
             HandleWakeWordDetectedEvent();
-        }
-
-        if (bits & MAIN_EVENT_VAD_CHANGE) {
+        } else if (bits & MAIN_EVENT_VAD_CHANGE) {
             if (GetDeviceState() == kDeviceStateListening) {
                 auto led = Board::GetInstance().GetLed();
                 led->OnStateChanged();
@@ -504,6 +511,14 @@ void Application::Run() {
                 ESP_LOGI(TAG, "Local song playback completed");
             }
 
+            if (GetDeviceState() == kDeviceStateIdle &&
+                !youtube_song_requested_ &&
+                !YouTubeAudioPoller::GetInstance().IsPlaying() &&
+                !audio_service_.IsWakeWordRunning() &&
+                audio_service_.IsIdle()) {
+                audio_service_.EnableWakeWordDetection(true);
+            }
+
             if (wifi_reset_confirmation_pending_ && !IsWifiResetConfirmationPending()) {
                 if (GetDeviceState() == kDeviceStateListening &&
                     listening_mode_ == kListeningModeAutoStop &&
@@ -519,9 +534,11 @@ void Application::Run() {
                 listening_started_at_us_ > 0) {
                 int64_t now_us = esp_timer_get_time();
                 if (now_us - listening_started_at_us_ > kListeningMaxDurationUs) {
-                    ESP_LOGW(TAG, "Listening timeout, auto-stopping");
+                    ESP_LOGW(TAG, "Listening timeout, closing conversation");
                     Board::GetInstance().OnListeningAutoStop();
-                    HandleStopListeningEvent();
+                    ArmWakeWordCooldown(kWakeWordCooldownAfterCloseUs);
+                    CloseAudioChannel();
+                    SetDeviceState(kDeviceStateIdle);
                 }
             }
         
@@ -816,12 +833,16 @@ void Application::InitializeProtocol() {
     });
     
     protocol_->OnAudioChannelClosed([this, &board]() {
-        board.SetPowerSaveLevel(PowerSaveLevel::LOW_POWER);
+        if (!YouTubeAudioPoller::GetInstance().IsPlaying()) {
+            board.SetPowerSaveLevel(PowerSaveLevel::LOW_POWER);
+        }
         Schedule([this]() {
             auto display = Board::GetInstance().GetDisplay();
             display->SetChatMessage("system", "");
             ArmWakeWordCooldown(kWakeWordCooldownAfterCloseUs);
-            SetDeviceState(kDeviceStateIdle);
+            if (!YouTubeAudioPoller::GetInstance().IsPlaying()) {
+                SetDeviceState(kDeviceStateIdle);
+            }
         });
     });
     
@@ -865,20 +886,21 @@ void Application::InitializeProtocol() {
                 Schedule([this]() {
                     if (youtube_song_requested_ || YouTubeAudioPoller::GetInstance().IsPlaying()) {
                         bool was_requested = youtube_song_requested_;
+                        std::string q = std::move(youtube_song_query_);
+                        youtube_song_query_.clear();
+                        if (!q.empty()) {
+                            YouTubeAudioPoller::GetInstance().PlayQuery(q);
+                        } else if (was_requested) {
+                            YouTubeAudioPoller::GetInstance().TriggerFetch();
+                        }
                         youtube_song_requested_ = false;
                         if (protocol_ && protocol_->IsAudioChannelOpened()) {
                             protocol_->CloseAudioChannel();
                         }
                         SetDeviceState(kDeviceStateIdle);
-                        if (!youtube_song_query_.empty()) {
-                            std::string q = std::move(youtube_song_query_);
-                            youtube_song_query_.clear();
-                            YouTubeAudioPoller::GetInstance().PlayQuery(q);
-                        } else if (was_requested) {
-                            YouTubeAudioPoller::GetInstance().TriggerFetch();
-                        }
                     } else if (GetDeviceState() == kDeviceStateSpeaking) {
                         if (listening_mode_ == kListeningModeManualStop) {
+                            CloseAudioChannel();
                             SetDeviceState(kDeviceStateIdle);
                         } else {
                             SetDeviceState(kDeviceStateListening);
@@ -893,12 +915,6 @@ void Application::InitializeProtocol() {
                         return;
                     }
                     ESP_LOGI(TAG, "<< %s", text->valuestring);
-                    std::string lower_tts = ToLowerAscii(text->valuestring);
-                    if (lower_tts.find("play_youtube_song") != std::string::npos ||
-                        lower_tts.find("diputar") != std::string::npos ||
-                        lower_tts.find("memutar") != std::string::npos) {
-                        youtube_song_requested_ = true;
-                    }
                     Schedule([this, display, message = std::string(text->valuestring)]() {
                         display->SetChatMessage("assistant", message.c_str());
                     });
@@ -919,33 +935,32 @@ void Application::InitializeProtocol() {
                     if (TryHandleLocalSongCommand(message)) {
                         return;
                     }
+                    static const std::vector<std::string> play_prefixes = {
+                        "tolong putarkan lagu ", "tolong putar lagu ",
+                        "tolong putarkan musik ", "tolong putar musik ",
+                        "tolong putarkan ", "tolong putar ",
+                        "putarkan lagu ", "putar lagu ",
+                        "putarkan musik ", "putar musik ",
+                        "play song ", "play music "
+                    };
                     std::string lower_msg = ToLowerAscii(message);
-                    if (lower_msg.find("lagu") != std::string::npos ||
-                        lower_msg.find("putar") != std::string::npos ||
-                        lower_msg.find("play") != std::string::npos ||
-                        lower_msg.find("musik") != std::string::npos ||
-                        lower_msg.find("youtube") != std::string::npos) {
-                        youtube_song_requested_ = true;
-                        std::string q = message;
-                        std::vector<std::string> prefixes = {
-                            "tolong putarkan lagu", "tolong putar lagu", "tolong putarkan", "tolong putar",
-                            "putarkan lagu", "putar lagu", "putarkan", "putar",
-                            "play song", "play music", "play", "musik", "lagu"
-                        };
-                        std::string lower_q = ToLowerAscii(q);
-                        for (const auto& p : prefixes) {
-                            auto pos = lower_q.find(p);
-                            if (pos != std::string::npos) {
-                                q = q.substr(pos + p.length());
+                    std::string found_query;
+                    for (const auto& p : play_prefixes) {
+                        auto pos = lower_msg.find(p);
+                        if (pos != std::string::npos && (pos == 0 || pos <= 15)) {
+                            std::string raw_q = message.substr(pos + p.length());
+                            while (!raw_q.empty() && (raw_q.front() == ' ' || raw_q.front() == ':' || raw_q.front() == ',')) raw_q.erase(0, 1);
+                            while (!raw_q.empty() && (raw_q.back() == ' ' || raw_q.back() == '.' || raw_q.back() == '?' || raw_q.back() == '!')) raw_q.pop_back();
+                            if (!raw_q.empty()) {
+                                found_query = raw_q;
                                 break;
                             }
                         }
-                        while (!q.empty() && (q.front() == ' ' || q.front() == ':' || q.front() == ',')) q.erase(0, 1);
-                        while (!q.empty() && (q.back() == ' ' || q.back() == '.' || q.back() == '?' || q.back() == '!')) q.pop_back();
-                        if (!q.empty()) {
-                            youtube_song_query_ = q;
-                            ESP_LOGI(TAG, "Extracted YouTube song query from voice: \"%s\"", youtube_song_query_.c_str());
-                        }
+                    }
+                    if (!found_query.empty()) {
+                        youtube_song_requested_ = true;
+                        youtube_song_query_ = found_query;
+                        ESP_LOGI(TAG, "Extracted YouTube song query from voice command: \"%s\"", youtube_song_query_.c_str());
                     }
                     TryHandleStandbyCommand(message);
                 });
@@ -1381,7 +1396,15 @@ void Application::Alert(const char* status, const char* message, const char* emo
     display->SetEmotion(emotion);
     display->SetChatMessage("system", message);
     if (!sound.empty()) {
+#if CONFIG_IDF_TARGET_ESP32C3
+        bool was_wake_word = audio_service_.IsWakeWordRunning();
+        if (was_wake_word) {
+            audio_service_.EnableWakeWordDetection(false);
+        }
         audio_service_.PlaySound(sound);
+#else
+        audio_service_.PlaySound(sound);
+#endif
     }
 }
 
@@ -1450,6 +1473,7 @@ void Application::HandleToggleChatEvent() {
     }
 
     if (state == kDeviceStateIdle) {
+        audio_service_.EnableWakeWordDetection(false);
         if (!protocol_->IsAudioChannelOpened()) {
             SetDeviceState(kDeviceStateConnecting);
             if (!protocol_->OpenAudioChannel()) {
@@ -1520,12 +1544,14 @@ void Application::HandleStopListeningEvent() {
             return;
         }
     } else if (state == kDeviceStateListening) {
-        ArmWakeWordCooldown(kWakeWordCooldownAfterCloseUs);
         if (protocol_) {
             protocol_->SendStopListening();
-            protocol_->CloseAudioChannel();
         }
-        SetDeviceState(kDeviceStateIdle);
+        audio_service_.EnableVoiceProcessing(false);
+        auto display = Board::GetInstance().GetDisplay();
+        if (display != nullptr) {
+            display->SetStatus(Lang::Strings::PLEASE_WAIT);
+        }
     }
 }
 
@@ -1611,16 +1637,20 @@ void Application::HandleStateChangedEvent() {
     switch (new_state) {
         case kDeviceStateUnknown:
         case kDeviceStateIdle:
-            board.SetPowerSaveLevel(PowerSaveLevel::LOW_POWER);
             listening_started_at_us_ = 0;
-            display->SetStatus(Lang::Strings::STANDBY);
-            display->SetEmotion("neutral");
-            display->SetFaceState(FaceState::Idle);
             audio_service_.EnableVoiceProcessing(false);
-            if (!YouTubeAudioPoller::GetInstance().IsPlaying()) {
-                audio_service_.EnableWakeWordDetection(true);
-            } else {
+            if (YouTubeAudioPoller::GetInstance().IsPlaying() || youtube_song_requested_) {
+                board.SetPowerSaveLevel(PowerSaveLevel::PERFORMANCE);
+                display->SetStatus("Memutar Lagu");
+                display->SetEmotion("music");
+                display->SetFaceState(FaceState::Music);
                 audio_service_.EnableWakeWordDetection(false);
+            } else {
+                board.SetPowerSaveLevel(PowerSaveLevel::LOW_POWER);
+                display->SetStatus(Lang::Strings::STANDBY);
+                display->SetEmotion("neutral");
+                display->SetFaceState(FaceState::Idle);
+                audio_service_.EnableWakeWordDetection(true);
             }
             break;
         case kDeviceStateConnecting:
@@ -1630,6 +1660,7 @@ void Application::HandleStateChangedEvent() {
             display->SetEmotion("neutral");
             display->SetFaceState(FaceState::Idle);
             display->SetChatMessage("system", "");
+            audio_service_.EnableWakeWordDetection(false);
             break;
         case kDeviceStateListening:
             board.SetPowerSaveLevel(PowerSaveLevel::PERFORMANCE);
@@ -1638,12 +1669,13 @@ void Application::HandleStateChangedEvent() {
             display->SetEmotion("neutral");
             display->SetFaceState(FaceState::Listening);
 
-            if (protocol_ && protocol_->IsAudioChannelOpened()) {
-                protocol_->SendStartListening(listening_mode_);
-            }
             audio_service_.EnableWakeWordDetection(false);
             if (!audio_service_.IsAudioProcessorRunning()) {
                 audio_service_.EnableVoiceProcessing(true);
+            }
+
+            if (protocol_ && protocol_->IsAudioChannelOpened()) {
+                protocol_->SendStartListening(listening_mode_);
             }
 
             // Play popup sound after ResetDecoder (in EnableVoiceProcessing) has been called
@@ -1706,6 +1738,7 @@ void Application::CloseAudioChannel() {
 
 void Application::SetListeningMode(ListeningMode mode) {
     listening_mode_ = mode;
+    listening_started_at_us_ = esp_timer_get_time();
     SetDeviceState(kDeviceStateListening);
 }
 
@@ -1832,6 +1865,10 @@ void Application::WakeWordInvoke(const std::string& wake_word) {
 }
 
 bool Application::CanEnterSleepMode() {
+    if (YouTubeAudioPoller::GetInstance().IsPlaying()) {
+        return false;
+    }
+
     if (GetDeviceState() != kDeviceStateIdle) {
         return false;
     }

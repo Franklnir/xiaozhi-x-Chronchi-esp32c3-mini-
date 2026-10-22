@@ -206,11 +206,41 @@ bool IsModeSwitchCommand(const std::string& normalized_text) {
 }
 
 constexpr int64_t kWifiResetConfirmWindowUs = 15LL * 1000000LL;
+constexpr int64_t kSongConfirmWindowUs = 20LL * 1000000LL;
 constexpr int64_t kWakeWordStartupSuppressUs = 3LL * 1000000LL;
 constexpr int64_t kWakeWordDebounceUs = 2LL * 1000000LL;
 constexpr int64_t kWakeWordCooldownAfterCloseUs = 2LL * 1000000LL;
 constexpr int64_t kListeningAutoStopGraceUs = 2500LL * 1000LL;
 constexpr int64_t kListeningMaxDurationUs = 30LL * 1000000LL;
+
+std::string CleanSongQuery(const std::string& query) {
+    std::string q = query;
+    std::string lower = ToLowerAscii(q);
+    static const std::vector<std::string> yt_suffixes = {
+        " di youtube", " dari youtube", " pada youtube",
+        " on youtube", " in youtube", " youtube"
+    };
+    for (const auto& sfx : yt_suffixes) {
+        if (lower.size() >= sfx.size() &&
+            lower.compare(lower.size() - sfx.size(), sfx.size(), sfx) == 0) {
+            q = q.substr(0, q.size() - sfx.size());
+            break;
+        }
+    }
+    static const std::vector<std::string> yt_prefixes = {
+        "di youtube ", "dari youtube ", "youtube "
+    };
+    lower = ToLowerAscii(q);
+    for (const auto& pfx : yt_prefixes) {
+        if (lower.rfind(pfx, 0) == 0) {
+            q = q.substr(pfx.size());
+            break;
+        }
+    }
+    while (!q.empty() && (q.front() == ' ' || q.front() == ':' || q.front() == ',' || q.front() == '"')) q.erase(0, 1);
+    while (!q.empty() && (q.back() == ' ' || q.back() == '.' || q.back() == '?' || q.back() == '!' || q.back() == '"')) q.pop_back();
+    return q;
+}
 
 } // namespace
 
@@ -513,9 +543,30 @@ void Application::Run() {
 
             if (GetDeviceState() == kDeviceStateIdle &&
                 !youtube_song_requested_ &&
+                !song_confirmation_pending_ &&
                 !YouTubeAudioPoller::GetInstance().IsPlaying() &&
                 !audio_service_.IsWakeWordRunning() &&
                 audio_service_.IsIdle()) {
+                audio_service_.EnableWakeWordDetection(true);
+            }
+
+            if (song_confirmation_pending_ && esp_timer_get_time() > song_confirmation_deadline_us_) {
+                ESP_LOGW(TAG, "Song confirmation timed out, returning to idle");
+                song_confirmation_pending_ = false;
+                song_confirm_video_id_.clear();
+                song_confirm_title_.clear();
+                song_confirm_duration_.clear();
+                auto display = Board::GetInstance().GetDisplay();
+                if (display != nullptr) {
+                    display->ShowNotification("Konfirmasi waktu habis", 3000);
+                    display->SetStatus(Lang::Strings::STANDBY);
+                    display->SetEmotion("neutral");
+                    display->SetFaceState(FaceState::Idle);
+                }
+                if (GetDeviceState() == kDeviceStateListening) {
+                    CloseAudioChannel();
+                    SetDeviceState(kDeviceStateIdle);
+                }
                 audio_service_.EnableWakeWordDetection(true);
             }
 
@@ -786,13 +837,29 @@ void Application::InitializeProtocol() {
 
     display->SetStatus(Lang::Strings::LOADING_PROTOCOL);
 
-    if (ota_->HasMqttConfig()) {
-        protocol_ = std::make_unique<MqttProtocol>();
-    } else if (ota_->HasWebsocketConfig()) {
+    std::string pref_protocol;
+    Settings sys_settings("system", false);
+    pref_protocol = sys_settings.GetString("protocol");
+    if (pref_protocol.empty()) {
+        Settings xz_settings("xiaozhi", false);
+        pref_protocol = xz_settings.GetString("protocol");
+    }
+
+    if (pref_protocol == "websocket") {
+        ESP_LOGI(TAG, "Selected protocol from settings: WebSocket");
         protocol_ = std::make_unique<WebsocketProtocol>();
-    } else {
-        ESP_LOGW(TAG, "No protocol specified in the OTA config, using MQTT");
+    } else if (pref_protocol == "mqtt") {
+        ESP_LOGI(TAG, "Selected protocol from settings: MQTT");
         protocol_ = std::make_unique<MqttProtocol>();
+    } else {
+        if (ota_->HasMqttConfig()) {
+            protocol_ = std::make_unique<MqttProtocol>();
+        } else if (ota_->HasWebsocketConfig()) {
+            protocol_ = std::make_unique<WebsocketProtocol>();
+        } else {
+            ESP_LOGW(TAG, "No protocol specified in the OTA config, using MQTT");
+            protocol_ = std::make_unique<MqttProtocol>();
+        }
     }
 
     protocol_->OnConnected([this]() {
@@ -884,16 +951,24 @@ void Application::InitializeProtocol() {
                 });
             } else if (strcmp(state->valuestring, "stop") == 0) {
                 Schedule([this]() {
+                    if (song_confirmation_pending_) {
+                        ESP_LOGI(TAG, "TTS finished while song confirmation is pending; entering listening for user answer");
+                        youtube_song_requested_ = false;
+                        youtube_song_query_.clear();
+                        SetDeviceState(kDeviceStateListening);
+                        return;
+                    }
+
                     if (youtube_song_requested_ || YouTubeAudioPoller::GetInstance().IsPlaying()) {
                         bool was_requested = youtube_song_requested_;
                         std::string q = std::move(youtube_song_query_);
                         youtube_song_query_.clear();
+                        youtube_song_requested_ = false;
                         if (!q.empty()) {
-                            YouTubeAudioPoller::GetInstance().PlayQuery(q);
+                            YouTubeAudioPoller::GetInstance().CheckAndConfirmQuery(q);
                         } else if (was_requested) {
                             YouTubeAudioPoller::GetInstance().TriggerFetch();
                         }
-                        youtube_song_requested_ = false;
                         if (protocol_ && protocol_->IsAudioChannelOpened()) {
                             protocol_->CloseAudioChannel();
                         }
@@ -926,6 +1001,9 @@ void Application::InitializeProtocol() {
                 ESP_LOGI(TAG, ">> %s", text->valuestring);
                 Schedule([this, display, message = std::string(text->valuestring)]() {
                     display->SetChatMessage("user", message.c_str());
+                    if (TryHandleSongConfirmation(message)) {
+                        return;
+                    }
                     if (TryHandleModeSwitchCommand(message)) {
                         return;
                     }
@@ -941,7 +1019,8 @@ void Application::InitializeProtocol() {
                         "tolong putarkan ", "tolong putar ",
                         "putarkan lagu ", "putar lagu ",
                         "putarkan musik ", "putar musik ",
-                        "play song ", "play music "
+                        "putar ", "putarkan ",
+                        "play song ", "play music ", "play "
                     };
                     std::string lower_msg = ToLowerAscii(message);
                     std::string found_query;
@@ -949,10 +1028,10 @@ void Application::InitializeProtocol() {
                         auto pos = lower_msg.find(p);
                         if (pos != std::string::npos && (pos == 0 || pos <= 15)) {
                             std::string raw_q = message.substr(pos + p.length());
-                            while (!raw_q.empty() && (raw_q.front() == ' ' || raw_q.front() == ':' || raw_q.front() == ',')) raw_q.erase(0, 1);
-                            while (!raw_q.empty() && (raw_q.back() == ' ' || raw_q.back() == '.' || raw_q.back() == '?' || raw_q.back() == '!')) raw_q.pop_back();
+                            while (!raw_q.empty() && (raw_q.front() == ' ' || raw_q.front() == ':' || raw_q.front() == ',' || raw_q.front() == '"')) raw_q.erase(0, 1);
+                            while (!raw_q.empty() && (raw_q.back() == ' ' || raw_q.back() == '.' || raw_q.back() == '?' || raw_q.back() == '!' || raw_q.back() == '"')) raw_q.pop_back();
                             if (!raw_q.empty()) {
-                                found_query = raw_q;
+                                found_query = CleanSongQuery(raw_q);
                                 break;
                             }
                         }
@@ -1005,8 +1084,8 @@ void Application::InitializeProtocol() {
             if (cJSON_IsString(vid_item)) {
                 std::string vid = vid_item->valuestring;
                 std::string tit = cJSON_IsString(title_item) ? title_item->valuestring : "YouTube Song";
-                ESP_LOGI(TAG, "Direct play_audio message received: title=\"%s\", vid=%s", tit.c_str(), vid.c_str());
-                YouTubeAudioPoller::GetInstance().PlaySong(vid, tit);
+                ESP_LOGI(TAG, "Direct play_audio message received: title=\"%s\", vid=%s. Checking confirmation...", tit.c_str(), vid.c_str());
+                YouTubeAudioPoller::GetInstance().CheckAndConfirmSong(vid, tit);
             }
 #if CONFIG_RECEIVE_CUSTOM_MESSAGE
         } else if (strcmp(type_value, "custom") == 0) {
@@ -1430,6 +1509,27 @@ void Application::StopListening() {
 }
 
 void Application::HandleToggleChatEvent() {
+    if (song_confirmation_pending_) {
+        ESP_LOGI(TAG, "User clicked button to cancel pending song confirmation");
+        song_confirmation_pending_ = false;
+        song_confirm_video_id_.clear();
+        song_confirm_title_.clear();
+        song_confirm_duration_.clear();
+        auto display = Board::GetInstance().GetDisplay();
+        if (display != nullptr) {
+            display->ShowNotification("Pemutaran Dibatalkan", 3000);
+            display->SetStatus(Lang::Strings::STANDBY);
+            display->SetEmotion("neutral");
+            display->SetFaceState(FaceState::Idle);
+        }
+        if (protocol_) {
+            protocol_->CloseAudioChannel();
+        }
+        SetDeviceState(kDeviceStateIdle);
+        audio_service_.EnableWakeWordDetection(true);
+        return;
+    }
+
     if (YouTubeAudioPoller::GetInstance().IsPlaying()) {
         ESP_LOGI(TAG, "User clicked button to stop YouTube audio");
         YouTubeAudioPoller::GetInstance().Abort();
@@ -1641,9 +1741,20 @@ void Application::HandleStateChangedEvent() {
             audio_service_.EnableVoiceProcessing(false);
             if (YouTubeAudioPoller::GetInstance().IsPlaying() || youtube_song_requested_) {
                 board.SetPowerSaveLevel(PowerSaveLevel::PERFORMANCE);
-                display->SetStatus("Memutar Lagu");
+                std::string cur_dur = YouTubeAudioPoller::GetInstance().GetCurrentDuration();
+                std::string tot_dur = YouTubeAudioPoller::GetInstance().GetTotalDuration();
+                if (!tot_dur.empty() && tot_dur != "--:--") {
+                    std::string st = cur_dur + " / " + tot_dur;
+                    display->SetStatus(st.c_str());
+                } else {
+                    display->SetStatus("Memutar Lagu");
+                }
                 display->SetEmotion("music");
                 display->SetFaceState(FaceState::Music);
+                audio_service_.EnableWakeWordDetection(false);
+            } else if (song_confirmation_pending_) {
+                board.SetPowerSaveLevel(PowerSaveLevel::PERFORMANCE);
+                display->SetStatus("Konfirmasi?");
                 audio_service_.EnableWakeWordDetection(false);
             } else {
                 board.SetPowerSaveLevel(PowerSaveLevel::LOW_POWER);
@@ -1665,7 +1776,11 @@ void Application::HandleStateChangedEvent() {
         case kDeviceStateListening:
             board.SetPowerSaveLevel(PowerSaveLevel::PERFORMANCE);
             listening_started_at_us_ = esp_timer_get_time();
-            display->SetStatus(Lang::Strings::LISTENING);
+            if (song_confirmation_pending_) {
+                display->SetStatus("Konfirmasi?");
+            } else {
+                display->SetStatus(Lang::Strings::LISTENING);
+            }
             display->SetEmotion("neutral");
             display->SetFaceState(FaceState::Listening);
 
@@ -1934,4 +2049,221 @@ void Application::ResetProtocol() {
         // Reset protocol
         protocol_.reset();
     });
+}
+
+void Application::EnterListeningModeAfterSong() {
+    ESP_LOGI(TAG, ">> DETEKSI: Lagu YouTube selesai diputar, langsung masuk ke mode LISTENING <<");
+    Board::GetInstance().SetPowerSaveLevel(PowerSaveLevel::PERFORMANCE);
+    audio_service_.EnableWakeWordDetection(false);
+    song_confirmation_pending_ = false;
+
+    auto display = Board::GetInstance().GetDisplay();
+    if (display != nullptr) {
+        display->SetStatus(Lang::Strings::LISTENING);
+        display->SetEmotion("neutral");
+        display->SetFaceState(FaceState::Listening);
+    }
+
+    if (!protocol_) {
+        ESP_LOGE(TAG, "Protocol not initialized");
+        SetDeviceState(kDeviceStateIdle);
+        audio_service_.EnableWakeWordDetection(true);
+        return;
+    }
+
+    if (!protocol_->IsAudioChannelOpened()) {
+        SetDeviceState(kDeviceStateConnecting);
+        if (!protocol_->OpenAudioChannel()) {
+            ESP_LOGE(TAG, "Failed to open audio channel after song finish");
+            SetDeviceState(kDeviceStateIdle);
+            audio_service_.EnableWakeWordDetection(true);
+            return;
+        }
+    }
+
+    play_popup_on_listening_ = true;
+    SetListeningMode(kListeningModeAutoStop);
+}
+
+void Application::RequestSongConfirmation(const std::string& video_id, const std::string& title, const std::string& duration) {
+    ESP_LOGI(TAG, ">> DETEKSI: Lagu YouTube ditemukan: \"%s\" (durasi: %s, vid: %s). Menunggu konfirmasi user... <<",
+             title.c_str(), duration.c_str(), video_id.c_str());
+
+    song_confirmation_pending_ = true;
+    song_confirm_video_id_ = video_id;
+    song_confirm_title_ = title;
+    song_confirm_duration_ = duration.empty() ? "--:--" : duration;
+    song_confirmation_deadline_us_ = esp_timer_get_time() + kSongConfirmWindowUs;
+
+    auto display = Board::GetInstance().GetDisplay();
+    if (display != nullptr) {
+        std::string notif = "Putar? " + song_confirm_duration_;
+        display->ShowNotification(notif.c_str(), 10000);
+
+        std::string prompt_msg = "Lagu: " + title + "\nDurasi: " + song_confirm_duration_ + "\nYakin ingin diputar? (Katakan 'ya' atau 'tidak')";
+        display->SetChatMessage("assistant", prompt_msg.c_str());
+        display->SetStatus("Konfirmasi?");
+        display->SetEmotion("neutral");
+        display->SetFaceState(FaceState::Listening);
+    }
+
+    audio_service_.PlaySound(Lang::Sounds::OGG_POPUP);
+
+    audio_service_.EnableWakeWordDetection(false);
+    if (protocol_) {
+        if (!protocol_->IsAudioChannelOpened()) {
+            SetDeviceState(kDeviceStateConnecting);
+            if (!protocol_->OpenAudioChannel()) {
+                ESP_LOGE(TAG, "Failed to open audio channel for song confirmation");
+                SetDeviceState(kDeviceStateIdle);
+                audio_service_.EnableWakeWordDetection(true);
+                return;
+            }
+        }
+        play_popup_on_listening_ = true;
+        SetListeningMode(kListeningModeAutoStop);
+    }
+}
+
+void Application::ArmSongConfirmation(const std::string& video_id, const std::string& title, const std::string& duration) {
+    ESP_LOGI(TAG, "ArmSongConfirmation: title=\"%s\", vid=%s, dur=%s", title.c_str(), video_id.c_str(), duration.c_str());
+    song_confirmation_pending_ = true;
+    song_confirm_video_id_ = video_id;
+    song_confirm_title_ = title;
+    song_confirm_duration_ = duration.empty() ? "--:--" : duration;
+    song_confirmation_deadline_us_ = esp_timer_get_time() + 45000000LL;
+
+    auto display = Board::GetInstance().GetDisplay();
+    if (display != nullptr) {
+        std::string notif = "Ketemu: " + song_confirm_duration_;
+        display->ShowNotification(notif.c_str(), 10000);
+        std::string prompt_msg = "Lagu: " + title + "\nDurasi: " + song_confirm_duration_;
+        display->SetChatMessage("assistant", prompt_msg.c_str());
+    }
+}
+
+void Application::ClearSongConfirmation() {
+    song_confirmation_pending_ = false;
+    song_confirm_video_id_.clear();
+    song_confirm_title_.clear();
+    song_confirm_duration_.clear();
+}
+
+bool Application::TryHandleSongConfirmation(const std::string& text) {
+    if (!song_confirmation_pending_) {
+        return false;
+    }
+
+    int64_t now_us = esp_timer_get_time();
+    if (now_us > song_confirmation_deadline_us_) {
+        ESP_LOGW(TAG, "Song confirmation timed out");
+        song_confirmation_pending_ = false;
+        song_confirm_video_id_.clear();
+        song_confirm_title_.clear();
+        song_confirm_duration_.clear();
+        return false;
+    }
+
+    std::string lowered = ToLowerAscii(text);
+    std::string normalized = NormalizeCommandText(lowered);
+    auto display = Board::GetInstance().GetDisplay();
+
+    // Affirmative response tokens
+    static const std::vector<std::string> confirm_keywords = {
+        "ya", "iya", "yakin", "tentu", "benar", "betul",
+        "putar", "putarkan", "putar saja", "putarkan saja", "mainkan",
+        "oke", "ok", "lanjut", "lanjutkan", "gas", "gass",
+        "boleh", "bisa", "mau", "setuju", "silakan", "terserah", "yoi", "sip",
+        "yes", "yeah", "yep", "sure", "play", "confirm"
+    };
+
+    // Negative / cancel response tokens
+    static const std::vector<std::string> cancel_keywords = {
+        "tidak", "enggak", "gak", "nggak", "ngga", "bukan",
+        "batal", "batalkan", "jangan", "jangan diputar", "tidak usah", "gak usah",
+        "stop", "cancel", "no", "nope", "don't"
+    };
+
+    bool is_confirm = false;
+    for (const auto& kw : confirm_keywords) {
+        if (normalized == kw || ContainsNormalizedPhrase(normalized, kw.c_str())) {
+            is_confirm = true;
+            break;
+        }
+    }
+
+    bool is_cancel = false;
+    for (const auto& kw : cancel_keywords) {
+        if (normalized == kw || ContainsNormalizedPhrase(normalized, kw.c_str())) {
+            is_cancel = true;
+            break;
+        }
+    }
+
+    if (is_confirm && !is_cancel) {
+        ESP_LOGI(TAG, ">> DETEKSI: User MENGONFIRMASI pemutaran lagu YouTube: \"%s\" (vid=%s, dur=%s) <<",
+                 song_confirm_title_.c_str(), song_confirm_video_id_.c_str(), song_confirm_duration_.c_str());
+        song_confirmation_pending_ = false;
+        std::string vid = std::move(song_confirm_video_id_);
+        std::string tit = std::move(song_confirm_title_);
+        std::string dur = std::move(song_confirm_duration_);
+
+        if (display != nullptr) {
+            display->ShowNotification("Memutar Lagu...", 3000);
+            display->SetChatMessage("assistant", ("Memutar: " + tit).c_str());
+        }
+
+        if (protocol_) {
+            protocol_->SendAbortSpeaking(kAbortReasonNone);
+            protocol_->CloseAudioChannel();
+        }
+
+        YouTubeAudioPoller::GetInstance().PlaySong(vid, tit, dur);
+        return true;
+    }
+
+    if (is_cancel) {
+        ESP_LOGI(TAG, ">> DETEKSI: User MEMBATALKAN pemutaran lagu YouTube: \"%s\" <<", song_confirm_title_.c_str());
+        song_confirmation_pending_ = false;
+        song_confirm_video_id_.clear();
+        song_confirm_title_.clear();
+        song_confirm_duration_.clear();
+
+        if (display != nullptr) {
+            display->ShowNotification("Pemutaran Dibatalkan", 3000);
+            display->SetChatMessage("assistant", "Pemutaran lagu dibatalkan.");
+            display->SetStatus(Lang::Strings::STANDBY);
+            display->SetEmotion("neutral");
+            display->SetFaceState(FaceState::Idle);
+        }
+
+        if (protocol_) {
+            protocol_->SendAbortSpeaking(kAbortReasonNone);
+            protocol_->CloseAudioChannel();
+        }
+        SetDeviceState(kDeviceStateIdle);
+        audio_service_.EnableWakeWordDetection(true);
+        return true;
+    }
+
+    // If user said an unrelated command/query, cancel pending confirmation so normal processing continues
+    ESP_LOGI(TAG, "Input did not match song confirmation; clearing pending confirmation");
+    song_confirmation_pending_ = false;
+    song_confirm_video_id_.clear();
+    song_confirm_title_.clear();
+    song_confirm_duration_.clear();
+    return false;
+}
+
+void Application::OnSongNotFound() {
+    auto display = Board::GetInstance().GetDisplay();
+    if (display != nullptr) {
+        display->ShowNotification("Lagu Tidak Ditemukan", 3000);
+        display->SetChatMessage("assistant", "Maaf, lagu YouTube tidak ditemukan.");
+        display->SetStatus(Lang::Strings::STANDBY);
+        display->SetEmotion("neutral");
+        display->SetFaceState(FaceState::Idle);
+    }
+    SetDeviceState(kDeviceStateIdle);
+    audio_service_.EnableWakeWordDetection(true);
 }

@@ -42,6 +42,9 @@ struct DeviceSettings {
     
     // Language
     std::string language;
+
+    // Protocol ("websocket" or "mqtt")
+    std::string protocol;
 };
 
 class SettingsManager {
@@ -71,6 +74,9 @@ public:
     
     std::string GetWakeWord() const;
     void SetWakeWord(const std::string& wake_word);
+    
+    std::string GetProtocol() const;
+    void SetProtocol(const std::string& protocol);
     
     std::string GetOledMode() const;
     void SetOledMode(const std::string& mode);

@@ -128,6 +128,9 @@ idf.py build flash monitor
      - `Hi Lexin` (`hilexin`): Standard Espressif ESP-SR model.
      - `Hi ESP` (`hiesp`): Short activation keyword.
      - `Ni Hao Xiaozhi` (`nihaoxiaozhi`): Original Mandarin model.
+   - **Protocol Dropdown**:
+     - `WebSocket` (`websocket`) - **Default**: Real-time bidirectional audio & low latency.
+     - `MQTT` (`mqtt`): MQTT messaging protocol.
    - **OLED Display Mode**: Choose between `Classic` (clean text) or `Animated` (expressive faces).
    - **Wi-Fi TX Power**: Select transmission power from 2 dBm to 20 dBm for optimal battery life vs. signal range.
 5. Save settings; the device automatically saves to NVS and reboots to connect.

@@ -204,6 +204,7 @@ ESP32 ← HTTP Chunked (Opus frames) ← Backend Custom
 - **Akses Web Browser**: Hubungkan smartphone/laptop ke hotspot dan buka browser di alamat `http://192.168.4.1`.
 - **Fitur Konfigurasi**:
   - **Pilihan Wake Word Dropdown**: Pilih kata bangun aktif (`Hi Jason`, `Hi Lexin`, `Hi ESP`, `Ni Hao Xiaozhi`) yang langsung tersimpan di NVS (`wake_word`).
+  - **Pilihan Protokol Dropdown**: Pilih protokol komunikasi AI (`WebSocket` atau `MQTT`) pada tab Advanced yang tersimpan di NVS (`protocol`).
   - **Pilihan Tampilan OLED**: Mode `Classic` (teks status bersih) atau `Animated` (emoji muka ekspresif).
   - **Wi-Fi TX Power**: Pengaturan daya transmisi radio Wi-Fi (2 dBm s.d 20 dBm) untuk menstabilkan koneksi atau menghemat konsumsi arus baterai.
   - **Multi-SSID Support**: Mampu menyimpan hingga 10 konfigurasi Wi-Fi dengan fallback otomatis jika jaringan utama terputus.

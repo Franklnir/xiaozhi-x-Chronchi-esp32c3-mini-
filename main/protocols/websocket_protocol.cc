@@ -82,6 +82,18 @@ void WebsocketProtocol::CloseAudioChannel() {
 bool WebsocketProtocol::OpenAudioChannel() {
     Settings settings("websocket", false);
     std::string url = settings.GetString("url");
+    if (url.empty()) {
+        Settings sys_settings("system", false);
+        std::string domain = sys_settings.GetString("server_domain");
+        if (domain.empty()) {
+            domain = "api.xiaozhi.me";
+        }
+        if (domain.rfind("ws://", 0) == 0 || domain.rfind("wss://", 0) == 0) {
+            url = domain;
+        } else {
+            url = "wss://" + domain + "/v1/chat";
+        }
+    }
     std::string token = settings.GetString("token");
     int version = settings.GetInt("version");
     if (version != 0) {

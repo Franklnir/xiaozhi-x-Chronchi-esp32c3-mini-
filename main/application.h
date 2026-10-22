@@ -126,6 +126,13 @@ public:
      */
     void ResetProtocol();
 
+    void EnterListeningModeAfterSong();
+    void RequestSongConfirmation(const std::string& video_id, const std::string& title, const std::string& duration);
+    void ArmSongConfirmation(const std::string& video_id, const std::string& title, const std::string& duration);
+    void ClearSongConfirmation();
+    void OnSongNotFound();
+    bool IsSongConfirmationPending() const { return song_confirmation_pending_; }
+
 private:
     Application();
     ~Application();
@@ -150,6 +157,11 @@ private:
     bool local_song_playing_ = false;
     bool youtube_song_requested_ = false;
     std::string youtube_song_query_;
+    bool song_confirmation_pending_ = false;
+    int64_t song_confirmation_deadline_us_ = 0;
+    std::string song_confirm_video_id_;
+    std::string song_confirm_title_;
+    std::string song_confirm_duration_;
     bool wifi_reset_confirmation_pending_ = false;
     int64_t wifi_reset_confirmation_deadline_us_ = 0;
     int64_t wake_word_ignore_until_us_ = 0;
@@ -158,6 +170,8 @@ private:
     int64_t standby_until_us_ = 0;  // Hands-free blocked until this time
     int clock_ticks_ = 0;
     TaskHandle_t activation_task_handle_ = nullptr;
+
+    bool TryHandleSongConfirmation(const std::string& text);
 
 
     // Event handlers

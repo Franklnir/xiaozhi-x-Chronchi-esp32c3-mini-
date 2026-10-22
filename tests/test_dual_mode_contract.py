@@ -208,6 +208,23 @@ def check_wake_word_contract() -> None:
     assert 'GetString("wake_word", "hijason")' in wake
 
 
+def check_protocol_contract() -> None:
+    portal = read("components/78__esp-wifi-connect/assets/wifi_configuration.html")
+    handler = read("components/78__esp-wifi-connect/wifi_configuration_ap.cc")
+    app = read("main/application.cc")
+
+    assert 'id="protocol"' in portal
+    assert 'value="websocket"' in portal
+    assert 'value="mqtt"' in portal
+    assert '"protocol"' in handler
+    assert '"websocket"' in handler
+    assert '"mqtt"' in handler
+    assert 'pref_protocol == "websocket"' in app
+    assert 'pref_protocol == "mqtt"' in app
+    assert "WebsocketProtocol" in app
+    assert "MqttProtocol" in app
+
+
 def main() -> None:
     checks = (
         check_partition_table,
@@ -216,6 +233,7 @@ def main() -> None:
         check_chronchi_contract,
         check_device_battery_contract,
         check_wake_word_contract,
+        check_protocol_contract,
     )
     for check in checks:
         check()

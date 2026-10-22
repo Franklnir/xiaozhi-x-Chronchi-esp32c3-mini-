@@ -78,6 +78,12 @@ input[type="checkbox"]{width:auto;margin-right:8px}
 
 <div class="card">
 <h2>🔧 Advanced Settings</h2>
+<label>Protocol</label>
+<select id="protocol">
+<option value="websocket">WebSocket</option>
+<option value="mqtt">MQTT</option>
+</select>
+
 <label>Custom OTA URL</label>
 <input type="text" id="ota_url" placeholder="https://api.tenclass.net/xiaozhi/ota/">
 
@@ -111,6 +117,7 @@ settings=await r.json();
 document.getElementById('server_domain').value=settings.server_domain||'xiaozhiscig.biz.id';
 document.getElementById('oled_mode').value=settings.oled_mode||'classic';
 document.getElementById('language').value=settings.language||'id_ID';
+document.getElementById('protocol').value=settings.protocol||'websocket';
 document.getElementById('volume').value=settings.volume||50;
 document.getElementById('volume-val').textContent=settings.volume||50;
 document.getElementById('ota_url').value=settings.ota_url||'';
@@ -162,6 +169,7 @@ async function saveSettings(){
 const data={
 action:'save',
 server_domain:(document.getElementById('server_domain').value.trim()||'xiaozhiscig.biz.id'),
+protocol:document.getElementById('protocol').value,
 oled_mode:document.getElementById('oled_mode').value,
 language:document.getElementById('language').value,
 volume:parseInt(document.getElementById('volume').value),
@@ -300,6 +308,9 @@ esp_err_t WebSettingsServer::HandleSetConfig(httpd_req_t* req) {
         
         item = cJSON_GetObjectItem(root, "oled_mode");
         if (cJSON_IsString(item)) settings.SetOledMode(item->valuestring);
+        
+        item = cJSON_GetObjectItem(root, "protocol");
+        if (cJSON_IsString(item)) settings.SetProtocol(item->valuestring);
         
         item = cJSON_GetObjectItem(root, "language");
         if (cJSON_IsString(item)) settings.SetLanguage(item->valuestring);

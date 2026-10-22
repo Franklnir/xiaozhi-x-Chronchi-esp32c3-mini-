@@ -62,6 +62,75 @@ std::string YouTubeAudioPoller::GetCurrentVideoId() const {
     return current_video_id_;
 }
 
+std::string YouTubeAudioPoller::GetTotalDuration() const {
+    std::lock_guard<std::mutex> lock(const_cast<std::mutex&>(song_mutex_));
+    return total_duration_str_;
+}
+
+int YouTubeAudioPoller::GetTotalDurationSec() const {
+    return total_duration_sec_;
+}
+
+std::string YouTubeAudioPoller::GetCurrentDuration() const {
+    std::lock_guard<std::mutex> lock(const_cast<std::mutex&>(song_mutex_));
+    return current_duration_str_;
+}
+
+int YouTubeAudioPoller::GetCurrentDurationSec() const {
+    return current_duration_sec_.load();
+}
+
+int YouTubeAudioPoller::ParseDurationToSeconds(const std::string& dur_str) {
+    if (dur_str.empty() || dur_str == "--:--") {
+        return 0;
+    }
+    bool all_digits = true;
+    for (char c : dur_str) {
+        if (!isdigit((unsigned char)c)) {
+            all_digits = false;
+            break;
+        }
+    }
+    if (all_digits) {
+        return atoi(dur_str.c_str());
+    }
+
+    int part1 = 0, part2 = 0, part3 = 0;
+    int colons = 0;
+    for (char c : dur_str) {
+        if (c == ':') colons++;
+    }
+
+    if (colons == 1) {
+        if (sscanf(dur_str.c_str(), "%d:%d", &part1, &part2) == 2) {
+            return part1 * 60 + part2;
+        }
+    } else if (colons >= 2) {
+        if (sscanf(dur_str.c_str(), "%d:%d:%d", &part1, &part2, &part3) == 3) {
+            return part1 * 3600 + part2 * 60 + part3;
+        }
+    }
+    return 0;
+}
+
+std::string YouTubeAudioPoller::FormatSecondsToDuration(int seconds) {
+    if (seconds < 0) {
+        seconds = 0;
+    }
+    char buf[16];
+    if (seconds >= 3600) {
+        int h = seconds / 3600;
+        int m = (seconds % 3600) / 60;
+        int s = seconds % 60;
+        snprintf(buf, sizeof(buf), "%02d:%02d:%02d", h, m, s);
+    } else {
+        int m = seconds / 60;
+        int s = seconds % 60;
+        snprintf(buf, sizeof(buf), "%02d:%02d", m, s);
+    }
+    return std::string(buf);
+}
+
 YouTubeAudioPoller::YouTubeAudioPoller() {
 }
 
@@ -121,36 +190,66 @@ void YouTubeAudioPoller::TriggerFetch() {
     Application::GetInstance().GetAudioService().EnableWakeWordDetection(false);
 }
 
-void YouTubeAudioPoller::PlaySong(const std::string& video_id, const std::string& title) {
+void YouTubeAudioPoller::PlaySong(const std::string& video_id, const std::string& title, const std::string& duration) {
     if (video_id.empty()) {
         return;
     }
-    ESP_LOGI(TAG, "PlaySong called directly: title=\"%s\", vid=%s", title.c_str(), video_id.c_str());
+    ESP_LOGI(TAG, "PlaySong called directly: title=\"%s\", vid=%s, duration=\"%s\"",
+             title.c_str(), video_id.c_str(), duration.c_str());
     {
         std::lock_guard<std::mutex> lock(song_mutex_);
         pending_video_id_ = video_id;
         pending_title_ = title.empty() ? "YouTube Song" : title;
+        pending_duration_ = duration;
     }
     play_requested_ = true;
     Application::GetInstance().GetAudioService().EnableWakeWordDetection(false);
 }
 
 void YouTubeAudioPoller::PlayQuery(const std::string& query) {
+    CheckAndConfirmQuery(query);
+}
+
+void YouTubeAudioPoller::CheckAndConfirmQuery(const std::string& query) {
     if (query.empty()) {
         return;
     }
-    // Guard: ignore if already playing or a play is pending (prevents TTS text triggering duplicate)
+    // Guard: ignore if already playing or a play is pending
     if (is_playing_.load() || play_requested_.load()) {
-        ESP_LOGW(TAG, "PlayQuery ignored (already playing or pending): \"%s\"", query.c_str());
+        ESP_LOGW(TAG, "CheckAndConfirmQuery ignored (already playing or pending): \"%s\"", query.c_str());
         return;
     }
-    ESP_LOGI(TAG, "PlayQuery called: query=\"%s\"", query.c_str());
+    ESP_LOGI(TAG, "CheckAndConfirmQuery called: query=\"%s\"", query.c_str());
     {
         std::lock_guard<std::mutex> lock(song_mutex_);
         pending_query_ = query;
     }
     query_requested_ = true;
     Application::GetInstance().GetAudioService().EnableWakeWordDetection(false);
+}
+
+void YouTubeAudioPoller::CheckAndConfirmSong(const std::string& video_id, const std::string& title) {
+    if (!video_id.empty()) {
+        CheckAndConfirmQuery(video_id);
+    } else if (!title.empty()) {
+        CheckAndConfirmQuery(title);
+    }
+}
+
+bool YouTubeAudioPoller::SearchSong(const std::string& query, std::string& video_id, std::string& title, std::string& duration) {
+    if (query.empty()) {
+        return false;
+    }
+    ESP_LOGI(TAG, "SearchSong called: query=\"%s\"", query.c_str());
+    bool found = FetchDirect(query, video_id, title, duration);
+    if (found) {
+        ESP_LOGI(TAG, ">> DETEKSI: Lagu YouTube ditemukan: \"%s\" (durasi: %s, vid: %s) <<",
+                 title.c_str(), duration.c_str(), video_id.c_str());
+        Application::GetInstance().ArmSongConfirmation(video_id, title, duration);
+    } else {
+        ESP_LOGW(TAG, ">> DETEKSI: Lagu YouTube tidak ditemukan: \"%s\" <<", query.c_str());
+    }
+    return found;
 }
 
 static std::string ReadHttpBounded(Http* http, size_t max_bytes = 4096) {
@@ -172,6 +271,11 @@ static void DrainHttp(Http* http) {
 }
 
 bool YouTubeAudioPoller::FetchDirect(const std::string& query, std::string& video_id, std::string& title) {
+    std::string duration;
+    return FetchDirect(query, video_id, title, duration);
+}
+
+bool YouTubeAudioPoller::FetchDirect(const std::string& query, std::string& video_id, std::string& title, std::string& duration) {
     auto network = Board::GetInstance().GetNetwork();
     if (network == nullptr) return false;
 
@@ -222,9 +326,20 @@ bool YouTubeAudioPoller::FetchDirect(const std::string& query, std::string& vide
     bool found = false;
     cJSON* vid_item = cJSON_GetObjectItem(root, "video_id");
     cJSON* title_item = cJSON_GetObjectItem(root, "title");
+    cJSON* dur_item = cJSON_GetObjectItem(root, "duration");
     if (cJSON_IsString(vid_item)) {
         video_id = vid_item->valuestring;
         title = cJSON_IsString(title_item) ? title_item->valuestring : query;
+        if (cJSON_IsString(dur_item)) {
+            duration = dur_item->valuestring;
+        } else if (cJSON_IsNumber(dur_item)) {
+            int dur_sec = dur_item->valueint;
+            char dur_buf[16];
+            snprintf(dur_buf, sizeof(dur_buf), "%02d:%02d", dur_sec / 60, dur_sec % 60);
+            duration = dur_buf;
+        } else {
+            duration = "--:--";
+        }
         found = true;
     }
     cJSON_Delete(root);
@@ -232,6 +347,11 @@ bool YouTubeAudioPoller::FetchDirect(const std::string& query, std::string& vide
 }
 
 bool YouTubeAudioPoller::FetchCommands(int& cmd_id, std::string& video_id, std::string& title) {
+    std::string duration;
+    return FetchCommands(cmd_id, video_id, title, duration);
+}
+
+bool YouTubeAudioPoller::FetchCommands(int& cmd_id, std::string& video_id, std::string& title, std::string& duration) {
     auto network = Board::GetInstance().GetNetwork();
     if (network == nullptr) {
         return false;
@@ -285,11 +405,19 @@ bool YouTubeAudioPoller::FetchCommands(int& cmd_id, std::string& video_id, std::
             cJSON* id_item = cJSON_GetObjectItem(cmd, "id");
             cJSON* vid_item = cJSON_GetObjectItem(cmd, "video_id");
             cJSON* title_item = cJSON_GetObjectItem(cmd, "title");
+            cJSON* dur_item = cJSON_GetObjectItem(cmd, "duration");
 
             if ((cJSON_IsNumber(id_item) || cJSON_IsString(id_item)) && cJSON_IsString(vid_item)) {
                 cmd_id = cJSON_IsNumber(id_item) ? id_item->valueint : atoi(id_item->valuestring);
                 video_id = vid_item->valuestring;
                 title = cJSON_IsString(title_item) ? title_item->valuestring : "YouTube Song";
+                if (cJSON_IsString(dur_item)) {
+                    duration = dur_item->valuestring;
+                } else if (cJSON_IsNumber(dur_item)) {
+                    duration = FormatSecondsToDuration(dur_item->valueint);
+                } else {
+                    duration = "--:--";
+                }
                 found = true;
             }
         }
@@ -383,7 +511,7 @@ bool YouTubeAudioPoller::ReportStatus(const std::string& status, const std::stri
 }
 
 
-void YouTubeAudioPoller::StreamAudio(const std::string& video_id, const std::string& title) {
+void YouTubeAudioPoller::StreamAudio(const std::string& video_id, const std::string& title, const std::string& duration) {
     auto& app = Application::GetInstance();
     auto display = Board::GetInstance().GetDisplay();
 
@@ -391,12 +519,21 @@ void YouTubeAudioPoller::StreamAudio(const std::string& video_id, const std::str
         std::lock_guard<std::mutex> lock(song_mutex_);
         current_video_id_ = video_id;
         current_title_ = title;
+        current_duration_str_ = "00:00";
+        total_duration_str_ = duration.empty() ? "--:--" : duration;
+        total_duration_sec_ = ParseDurationToSeconds(total_duration_str_);
+        if (total_duration_sec_ > 0) {
+            total_duration_str_ = FormatSecondsToDuration(total_duration_sec_);
+        }
+        current_duration_sec_ = 0;
     }
     is_playing_ = true;
     abort_requested_ = false;
     app.ResetAborted();
 
     ESP_LOGI(TAG, ">> DETEKSI: Mulai memutar lagu YouTube: \"%s\" (vid=%s) <<", title.c_str(), video_id.c_str());
+    ESP_LOGI(TAG, ">> DETEKSI: Total durasi lagu: %s (%d detik), Durasi awal: 00:00 <<",
+             total_duration_str_.c_str(), total_duration_sec_);
     app.GetAudioService().EnableWakeWordDetection(false);
 
     // Wait for TTS speaking to finish (max 8 sec) before opening stream
@@ -437,7 +574,8 @@ void YouTubeAudioPoller::StreamAudio(const std::string& video_id, const std::str
     std::string display_title = "[PLAY] " + title;
     if (display != nullptr) {
         display->SetChatMessage("assistant", display_title.c_str());
-        display->SetStatus("Memutar Lagu");
+        std::string init_status = "00:00 / " + total_duration_str_;
+        display->SetStatus(init_status.c_str());
         display->SetEmotion("music");
         display->SetFaceState(FaceState::Music);
         display->ShowNotification(display_title.c_str(), 5000);
@@ -505,6 +643,35 @@ void YouTubeAudioPoller::StreamAudio(const std::string& video_id, const std::str
     static const int kMaxRetries = 3;
     int64_t last_rssi_check_us = 0;
     int8_t live_rssi = rssi;
+
+    int last_status_sec = -1;
+    auto update_duration_progress = [&](int frames) {
+        int cur_sec = (int)(frames * 0.060f);
+        current_duration_sec_ = cur_sec;
+        if (cur_sec != last_status_sec) {
+            last_status_sec = cur_sec;
+            std::string cur_str = FormatSecondsToDuration(cur_sec);
+            {
+                std::lock_guard<std::mutex> lock(song_mutex_);
+                current_duration_str_ = cur_str;
+            }
+            if (display != nullptr) {
+                std::string status_str = cur_str + " / " + total_duration_str_;
+                display->SetStatus(status_str.c_str());
+            }
+            if (cur_sec == 1 || cur_sec % 5 == 0) {
+                if (total_duration_sec_ > 0) {
+                    float pct = ((float)cur_sec / (float)total_duration_sec_) * 100.0f;
+                    if (pct > 100.0f) pct = 100.0f;
+                    ESP_LOGI(TAG, ">> DETEKSI: Durasi saat ini: %s / %s (%.1f%%) <<",
+                             cur_str.c_str(), total_duration_str_.c_str(), pct);
+                } else {
+                    ESP_LOGI(TAG, ">> DETEKSI: Durasi saat ini: %s / %s <<",
+                             cur_str.c_str(), total_duration_str_.c_str());
+                }
+            }
+        }
+    };
 
     while (running_.load() && !abort_requested_.load()) {
         auto http = network->CreateHttp(0);
@@ -789,11 +956,13 @@ void YouTubeAudioPoller::StreamAudio(const std::string& video_id, const std::str
                                 }
                                 prebuffer.clear();
                                 is_prebuffering = false;
+                                update_duration_progress(frames_pushed);
                             }
                         } else {
                             app.GetAudioService().PushPacketToDecodeQueue(std::move(packet), true);
                             frames_pushed++;
                             session_frames++;
+                            update_duration_progress(frames_pushed);
                             if (frames_pushed == 1 || frames_pushed % 50 == 0) {
                                 ESP_LOGI(TAG, "Audio frame #%d pushed to decoder (len=%u, q_size=%u)",
                                          frames_pushed, (unsigned int)pkt_len, (unsigned int)app.GetAudioService().GetDecodeQueueSize());
@@ -827,6 +996,7 @@ void YouTubeAudioPoller::StreamAudio(const std::string& video_id, const std::str
                 session_frames++;
             }
             prebuffer.clear();
+            update_duration_progress(frames_pushed);
         }
 
         {
@@ -843,28 +1013,50 @@ void YouTubeAudioPoller::StreamAudio(const std::string& video_id, const std::str
              total_bytes_streamed, frames_pushed, abort_requested_.load());
 
     bool was_aborted = abort_requested_.load();
-    if (!was_aborted) {
+    bool playback_succeeded = (frames_pushed > 10 && total_bytes_streamed > 2048);
+
+    if (playback_succeeded && !was_aborted) {
+        ESP_LOGI(TAG, ">> DETEKSI: Stream audio selesai diunduh. Menunggu speaker memainkan sisa buffer audio... <<");
         int wait_ms = 0;
-        while (!app.GetAudioService().IsPlaybackIdle() && wait_ms < 5000) {
+        while (!app.GetAudioService().IsPlaybackIdle() && wait_ms < 6000 && !abort_requested_.load()) {
             vTaskDelay(pdMS_TO_TICKS(100));
             wait_ms += 100;
+            update_duration_progress(frames_pushed);
         }
     } else {
         app.GetAudioService().ResetDecoder();
     }
 
-    // Set is_playing_ to false immediately so device state logic knows playback has ended
+    was_aborted = abort_requested_.load();
     is_playing_ = false;
+
+    int final_sec = (int)(frames_pushed * 0.060f);
+    std::string final_dur_str = FormatSecondsToDuration(final_sec);
+    current_duration_sec_ = final_sec;
+
     {
         std::lock_guard<std::mutex> lock(song_mutex_);
         current_video_id_.clear();
         current_title_.clear();
+        current_duration_str_ = final_dur_str;
     }
 
-    if (!was_aborted) {
-        ESP_LOGI(TAG, ">> DETEKSI: Lagu YouTube \"%s\" SELESAI DIPUTAR secara normal <<", title.c_str());
+    if (playback_succeeded && !was_aborted) {
+        ESP_LOGI(TAG, ">> DETEKSI: Lagu YouTube \"%s\" SELESAI DIPUTAR secara normal (Durasi: %s / %s, Total Frames: %d) <<",
+                 title.c_str(), final_dur_str.c_str(), total_duration_str_.c_str(), frames_pushed);
         if (display != nullptr) {
-            display->ShowNotification("Lagu YouTube Selesai", 3000);
+            display->ShowNotification("Lagu Selesai, Mendengarkan...", 3000);
+            display->SetChatMessage("assistant", "");
+            display->SetChatMessage("system", "");
+            display->SetStatus("Mendengarkan...");
+            display->SetEmotion("neutral");
+            display->SetFaceState(FaceState::Listening);
+        }
+    } else if (was_aborted) {
+        ESP_LOGI(TAG, ">> DETEKSI: Lagu YouTube \"%s\" DIHENTIKAN (Durasi: %s / %s) <<",
+                 title.c_str(), final_dur_str.c_str(), total_duration_str_.c_str());
+        if (display != nullptr) {
+            display->ShowNotification("Lagu Dihentikan", 3000);
             display->SetChatMessage("assistant", "");
             display->SetChatMessage("system", "");
             display->SetStatus(Lang::Strings::STANDBY);
@@ -872,11 +1064,11 @@ void YouTubeAudioPoller::StreamAudio(const std::string& video_id, const std::str
             display->SetFaceState(FaceState::Idle);
         }
     } else {
-        ESP_LOGI(TAG, ">> DETEKSI: Lagu YouTube \"%s\" DIHENTIKAN <<", title.c_str());
+        ESP_LOGW(TAG, ">> DETEKSI: Gagal streaming lagu YouTube \"%s\" (frames=%d, bytes=%zu) <<",
+                 title.c_str(), frames_pushed, total_bytes_streamed);
         if (display != nullptr) {
-            display->ShowNotification("Lagu Dihentikan", 3000);
-            display->SetChatMessage("assistant", "");
-            display->SetChatMessage("system", "");
+            display->ShowNotification("Gagal Memutar Lagu", 3000);
+            display->SetChatMessage("assistant", "Gagal memutar lagu dari YouTube.");
             display->SetStatus(Lang::Strings::STANDBY);
             display->SetEmotion("neutral");
             display->SetFaceState(FaceState::Idle);
@@ -887,18 +1079,26 @@ void YouTubeAudioPoller::StreamAudio(const std::string& video_id, const std::str
     ogg_buf.reset();
 
     // 1. Report playback end status via lightweight HTTP while WakeNet is not loaded (free SRAM > 35KB)
-    std::string end_status = was_aborted ? "stopped" : "finished";
+    std::string end_status = was_aborted ? "stopped" : (playback_succeeded ? "finished" : "failed");
     ReportStatus(end_status, video_id);
-    vTaskDelay(pdMS_TO_TICKS(150));
-
-    // 2. Cleanly restore device state to Idle/Standby
-    app.SetDeviceState(kDeviceStateIdle);
-    Board::GetInstance().SetPowerSaveLevel(PowerSaveLevel::LOW_POWER);
-    esp_wifi_set_ps(WIFI_PS_MIN_MODEM);
     vTaskDelay(pdMS_TO_TICKS(100));
 
-    // 3. Re-enable WakeWord detection in clean, unfragmented memory
-    app.GetAudioService().EnableWakeWordDetection(true);
+    if (playback_succeeded && !was_aborted) {
+        // Otomatis langsung masuk ke mode LISTENING HANYA jika lagu benar-benar sudah selesai diputar!
+        ESP_LOGI(TAG, ">> DETEKSI: Lagu selesai diputar -> LANGSUNG MASUK KE MODE LISTENING <<");
+        app.Schedule([&app]() {
+            app.EnterListeningModeAfterSong();
+        });
+    } else {
+        // 2. Cleanly restore device state to Idle/Standby
+        app.SetDeviceState(kDeviceStateIdle);
+        Board::GetInstance().SetPowerSaveLevel(PowerSaveLevel::LOW_POWER);
+        esp_wifi_set_ps(WIFI_PS_MIN_MODEM);
+        vTaskDelay(pdMS_TO_TICKS(100));
+
+        // 3. Re-enable WakeWord detection in clean, unfragmented memory
+        app.GetAudioService().EnableWakeWordDetection(true);
+    }
 }
 
 void YouTubeAudioPoller::TaskLoop() {
@@ -914,20 +1114,21 @@ void YouTubeAudioPoller::TaskLoop() {
             break;
         }
 
-        // Direct MCP tool call has highest priority
+        // Direct MCP tool call or confirmed song playback has highest priority
         if (play_requested_.exchange(false)) {
-            std::string vid, tit;
+            std::string vid, tit, dur;
             {
                 std::lock_guard<std::mutex> lock(song_mutex_);
                 vid = pending_video_id_;
                 tit = pending_title_;
+                dur = pending_duration_;
             }
             if (!vid.empty()) {
-                ESP_LOGI(TAG, "Direct tool call playing: \"%s\" (vid=%s)", tit.c_str(), vid.c_str());
-                StreamAudio(vid, tit);
+                ESP_LOGI(TAG, "Playing confirmed song: \"%s\" (vid=%s, dur=%s)", tit.c_str(), vid.c_str(), dur.c_str());
+                StreamAudio(vid, tit, dur);
             }
         }
-        // Direct voice query search
+        // Direct voice query search / checking with user confirmation
         else if (query_requested_.exchange(false)) {
             std::string q;
             {
@@ -943,15 +1144,22 @@ void YouTubeAudioPoller::TaskLoop() {
                     app.GetAudioService().EnableWakeWordDetection(false);
                 }
 
-                ESP_LOGI(TAG, "Searching & streaming song query: \"%s\"", q.c_str());
-                std::string vid, tit;
-                bool found = FetchDirect(q, vid, tit);
+                ESP_LOGI(TAG, ">> DETEKSI: Mengecek info lagu YouTube: \"%s\" <<", q.c_str());
+                std::string vid, tit, dur;
+                bool found = FetchDirect(q, vid, tit, dur);
                 is_fetching_ = false;
 
                 if (found) {
-                    StreamAudio(vid, tit);
-                } else if (was_wake_word && app.GetDeviceState() == kDeviceStateIdle) {
-                    app.GetAudioService().EnableWakeWordDetection(true);
+                    ESP_LOGI(TAG, ">> DETEKSI: Lagu YouTube ditemukan: \"%s\" (durasi: %s, vid: %s). Meminta konfirmasi user. <<",
+                             tit.c_str(), dur.c_str(), vid.c_str());
+                    app.Schedule([&app, vid, tit, dur]() {
+                        app.RequestSongConfirmation(vid, tit, dur);
+                    });
+                } else {
+                    ESP_LOGW(TAG, ">> DETEKSI: Lagu YouTube tidak ditemukan: \"%s\" <<", q.c_str());
+                    app.Schedule([&app]() {
+                        app.OnSongNotFound();
+                    });
                 }
             }
         }
@@ -968,14 +1176,15 @@ void YouTubeAudioPoller::TaskLoop() {
             int cmd_id = 0;
             std::string video_id;
             std::string title;
-            bool found = FetchCommands(cmd_id, video_id, title);
+            std::string duration;
+            bool found = FetchCommands(cmd_id, video_id, title, duration);
             is_fetching_ = false;
 
             if (found) {
-                ESP_LOGI(TAG, "Playing requested YouTube song (1 song only): id=%d, title=\"%s\", vid=%s",
-                         cmd_id, title.c_str(), video_id.c_str());
+                ESP_LOGI(TAG, "Playing requested YouTube song (1 song only): id=%d, title=\"%s\", vid=%s, dur=%s",
+                         cmd_id, title.c_str(), video_id.c_str(), duration.c_str());
                 AckCommand(cmd_id);
-                StreamAudio(video_id, title);
+                StreamAudio(video_id, title, duration);
             } else if (was_wake_word && app.GetDeviceState() == kDeviceStateIdle) {
                 app.GetAudioService().EnableWakeWordDetection(true);
             }

@@ -166,6 +166,15 @@ public:
         properties_.push_back(property);
     }
 
+    bool has(const std::string& name) const {
+        for (const auto& property : properties_) {
+            if (property.name() == name) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     const Property& operator[](const std::string& name) const {
         for (const auto& property : properties_) {
             if (property.name() == name) {

@@ -20,6 +20,7 @@ SettingsManager::SettingsManager() {
     settings_.oled_mode = "classic";
     settings_.ota_url = "https://api.tenclass.net/xiaozhi/ota/";
     settings_.language = "id_ID";
+    settings_.protocol = "websocket";
 }
 
 SettingsManager::~SettingsManager() {
@@ -105,6 +106,21 @@ bool SettingsManager::LoadFromNvs() {
     load_string("oled_mode", settings_.oled_mode);
     load_string("ota_url", settings_.ota_url);
     load_string("language", settings_.language);
+    load_string("protocol", settings_.protocol);
+    if (settings_.protocol.empty()) {
+        nvs_handle_t sys_nvs;
+        if (nvs_open("system", NVS_READONLY, &sys_nvs) == ESP_OK) {
+            char buf[32] = {};
+            size_t len = sizeof(buf);
+            if (nvs_get_str(sys_nvs, "protocol", buf, &len) == ESP_OK && len > 0) {
+                settings_.protocol = buf;
+            }
+            nvs_close(sys_nvs);
+        }
+    }
+    if (settings_.protocol != "websocket" && settings_.protocol != "mqtt") {
+        settings_.protocol = "websocket";
+    }
 
     int8_t i8_value = 0;
     int16_t i16_value = 0;
@@ -166,6 +182,7 @@ bool SettingsManager::Save() {
         nvs_close(sys_nvs);
     }
     nvs_set_str(nvs_handle_, "wake_word", settings_.wake_word.c_str());
+    err |= nvs_set_str(nvs_handle_, "protocol", settings_.protocol.c_str());
     err |= nvs_set_str(nvs_handle_, "oled_mode", settings_.oled_mode.c_str());
     err |= nvs_set_str(nvs_handle_, "ota_url", settings_.ota_url.c_str());
     err |= nvs_set_str(nvs_handle_, "language", settings_.language.c_str());
@@ -379,6 +396,20 @@ void SettingsManager::SetWakeWord(const std::string& wake_word) {
     }
 }
 
+std::string SettingsManager::GetProtocol() const {
+    return settings_.protocol.empty() ? "websocket" : settings_.protocol;
+}
+
+void SettingsManager::SetProtocol(const std::string& protocol) {
+    if (protocol == "websocket" || protocol == "mqtt") {
+        settings_.protocol = protocol;
+        Save();
+        for (const auto& cb : callbacks_) {
+            cb("protocol");
+        }
+    }
+}
+
 std::string SettingsManager::GetOledMode() const { return settings_.oled_mode; }
 void SettingsManager::SetOledMode(const std::string& mode) {
     settings_.oled_mode = mode;
@@ -446,6 +477,7 @@ bool SettingsManager::ResetToDefaults() {
     settings_.oled_mode = "classic";
     settings_.ota_url = "https://api.tenclass.net/xiaozhi/ota/";
     settings_.language = "id_ID";
+    settings_.protocol = "websocket";
     settings_.volume = 50;
     settings_.sleep_mode_enabled = false;
     settings_.sleep_timeout_sec = 60;
@@ -462,6 +494,7 @@ std::string SettingsManager::ExportToJson() const {
     
     cJSON_AddStringToObject(root, "server_domain", settings_.server_domain.c_str());
     cJSON_AddStringToObject(root, "wake_word", settings_.wake_word.c_str());
+    cJSON_AddStringToObject(root, "protocol", settings_.protocol.c_str());
     cJSON_AddStringToObject(root, "oled_mode", settings_.oled_mode.c_str());
     cJSON_AddStringToObject(root, "ota_url", settings_.ota_url.c_str());
     cJSON_AddStringToObject(root, "language", settings_.language.c_str());
@@ -509,6 +542,12 @@ bool SettingsManager::ImportFromJson(const std::string& json) {
     
     item = cJSON_GetObjectItem(root, "oled_mode");
     if (cJSON_IsString(item)) settings_.oled_mode = item->valuestring;
+    
+    item = cJSON_GetObjectItem(root, "protocol");
+    if (cJSON_IsString(item) && item->valuestring &&
+        (std::strcmp(item->valuestring, "websocket") == 0 || std::strcmp(item->valuestring, "mqtt") == 0)) {
+        settings_.protocol = item->valuestring;
+    }
     
     item = cJSON_GetObjectItem(root, "ota_url");
     if (cJSON_IsString(item)) settings_.ota_url = item->valuestring;

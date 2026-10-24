@@ -190,6 +190,7 @@ bool SettingsManager::Save() {
     nvs_handle_t sys_nvs;
     if (nvs_open("system", NVS_READWRITE, &sys_nvs) == ESP_OK) {
         nvs_set_str(sys_nvs, "server_domain", settings_.server_domain.c_str());
+        nvs_set_str(sys_nvs, "protocol", settings_.protocol.c_str());
         nvs_commit(sys_nvs);
         nvs_close(sys_nvs);
     }

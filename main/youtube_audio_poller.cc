@@ -178,16 +178,18 @@ void YouTubeAudioPoller::Stop() {
 }
 
 void YouTubeAudioPoller::Abort() {
-    if (is_playing_.load()) {
-        ESP_LOGI(TAG, "Abort requested for YouTube audio stream");
-        abort_requested_ = true;
-        Application::GetInstance().GetAudioService().ResetDecoder();
-        {
-            std::lock_guard<std::mutex> lock(http_mutex_);
-            if (active_http_ != nullptr) {
-                ESP_LOGI(TAG, "Force-closing active HTTP connection to stop stream immediately");
-                active_http_->Close();
-            }
+    ESP_LOGI(TAG, "Abort requested for YouTube audio stream");
+    abort_requested_ = true;
+    play_requested_ = false;
+    query_requested_ = false;
+    trigger_requested_ = false;
+    is_fetching_ = false;
+    Application::GetInstance().GetAudioService().ResetDecoder();
+    {
+        std::lock_guard<std::mutex> lock(http_mutex_);
+        if (active_http_ != nullptr) {
+            ESP_LOGI(TAG, "Force-closing active HTTP connection to stop stream immediately");
+            active_http_->Close();
         }
     }
 }

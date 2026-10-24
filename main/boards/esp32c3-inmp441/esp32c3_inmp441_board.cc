@@ -25,6 +25,7 @@
 #include "mode/mode_store.h"
 #include "settings.h"
 #include "youtube_audio_poller.h"
+#include "assets/lang_config.h"
 
 #include <esp_err.h>
 #include <esp_log.h>
@@ -148,10 +149,30 @@ private:
     void InitializeButtons() {
         boot_button_.OnPressDown([this]() {
             boot_button_pressed_ = true;
-            if (YouTubeAudioPoller::GetInstance().IsPlaying()) {
-                ESP_LOGI(TAG, "GPIO 3 pressed while playing YouTube -> Instant Abort (0 ms)!");
+            auto& app = Application::GetInstance();
+            bool is_yt = YouTubeAudioPoller::GetInstance().IsPlaying();
+            bool is_speaking = (app.GetDeviceState() == kDeviceStateSpeaking);
+            bool is_song_confirm = app.IsSongConfirmationPending();
+
+            if (is_yt || is_speaking || is_song_confirm) {
+                ESP_LOGI(TAG, "GPIO 3 ditekan -> Menghentikan lagu YouTube / pemutaran audio secara instan!");
                 youtube_interrupted_ = true;
-                YouTubeAudioPoller::GetInstance().Abort();
+                if (is_yt) {
+                    YouTubeAudioPoller::GetInstance().Abort();
+                }
+                if (is_song_confirm) {
+                    app.ClearSongConfirmation();
+                }
+                app.AbortSpeaking(kAbortReasonNone);
+                auto display = GetDisplay();
+                if (display != nullptr) {
+                    display->ShowNotification("Lagu Dihentikan", 2000);
+                    display->SetStatus(Lang::Strings::STANDBY);
+                    display->SetEmotion("neutral");
+                    display->SetFaceState(FaceState::Idle);
+                }
+                app.SetDeviceState(kDeviceStateIdle);
+                app.GetAudioService().EnableWakeWordDetection(true);
             }
             mode_selector_->OnPressDown();
         });

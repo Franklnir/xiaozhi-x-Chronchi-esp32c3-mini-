@@ -62,11 +62,7 @@ void McpServer::AddCommonTools() {
         });
 
     AddTool("self.audio.search_youtube",
-        "WAJIB DIPANGGIL PERTAMA KALI saat pengguna meminta memutar atau mencari lagu/musik apapun. "
-        "Alat ini mencari lagu di YouTube dan mengembalikan judul lagu, durasi, dan video_id. "
-        "SETELAH MEMANGGIL ALAT INI, KAMU WAJIB BERBICARA KEPADA PENGGUNA: sebutkan judul lagu dan durasi yang ditemukan, "
-        "lalu tanyakan apakah pengguna yakin ingin memutarnya. "
-        "JANGAN memutar lagu sebelum pengguna mengonfirmasi 'ya'.",
+        "Cari lagu di YouTube untuk mendapatkan video_id, judul, dan durasi sebelum konfirmasi.",
         PropertyList({
             Property("query", kPropertyTypeString)
         }),
@@ -91,36 +87,8 @@ void McpServer::AddCommonTools() {
             return res;
         });
 
-    AddTool("self.audio.check_youtube",
-        "Alias untuk self.audio.search_youtube. Mencari lagu di YouTube untuk mendapatkan judul dan durasi sebelum konfirmasi.",
-        PropertyList({
-            Property("query", kPropertyTypeString)
-        }),
-        [](const PropertyList& properties) -> ReturnValue {
-            std::string query = properties["query"].value<std::string>();
-            ESP_LOGI(TAG, "Tool Call: self.audio.check_youtube: query=\"%s\"", query.c_str());
-            std::string vid, tit, dur;
-            bool found = YouTubeAudioPoller::GetInstance().SearchSong(query, vid, tit, dur);
-            
-            cJSON* res = cJSON_CreateObject();
-            if (found) {
-                cJSON_AddBoolToObject(res, "found", true);
-                cJSON_AddStringToObject(res, "video_id", vid.c_str());
-                cJSON_AddStringToObject(res, "title", tit.c_str());
-                cJSON_AddStringToObject(res, "duration", dur.c_str());
-                std::string instruction = "Lagu berhasil ditemukan! Kamu WAJIB berkata kepada pengguna secara lisan: 'Saya menemukan lagu " + tit + " dengan durasi " + dur + ". Apakah kamu yakin ingin memutarnya?'. TUNGGU jawaban pengguna, JANGAN panggil play_youtube sekarang!";
-                cJSON_AddStringToObject(res, "instruction", instruction.c_str());
-            } else {
-                cJSON_AddBoolToObject(res, "found", false);
-                cJSON_AddStringToObject(res, "instruction", "Lagu tidak ditemukan di YouTube. Beritahu pengguna bahwa lagu tersebut tidak ditemukan.");
-            }
-            return res;
-        });
-
     AddTool("self.audio.play_youtube",
-        "Memutar audio YouTube ke speaker perangkat. "
-        "HANYA BOLEH DIPANGGIL SETELAH kamu mencari lagu dengan self.audio.search_youtube DAN pengguna sudah menjawab konfirmasi 'ya' / 'putar'. "
-        "JANGAN panggil alat ini langsung jika pengguna belum mengonfirmasi!",
+        "Putar audio YouTube ke speaker setelah pengguna mengonfirmasi 'ya'.",
         PropertyList({
             Property("video_id", kPropertyTypeString),
             Property("title", kPropertyTypeString),
@@ -578,7 +546,7 @@ void McpServer::ReplyError(int id, const std::string& message) {
 }
 
 void McpServer::GetToolsList(int id, const std::string& cursor, bool list_user_only_tools) {
-    const int max_payload_size = 8000;
+    const int max_payload_size = 1024;
     std::string json = "{\"tools\":[";
     
     bool found_cursor = cursor.empty();

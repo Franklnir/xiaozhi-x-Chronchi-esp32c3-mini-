@@ -41,35 +41,42 @@ void Protocol::SetError(const std::string& message) {
 
 void Protocol::SendAbortSpeaking(AbortReason reason) {
     cJSON* root = cJSON_CreateObject();
+    if (!root) return;
     cJSON_AddStringToObject(root, "session_id", session_id_.c_str());
     cJSON_AddStringToObject(root, "type", "abort");
     if (reason == kAbortReasonWakeWordDetected) {
         cJSON_AddStringToObject(root, "reason", "wake_word_detected");
     }
     auto json_str = cJSON_PrintUnformatted(root);
-    std::string message(json_str);
-    cJSON_free(json_str);
+    if (json_str) {
+        std::string message(json_str);
+        cJSON_free(json_str);
+        SendText(message);
+    }
     cJSON_Delete(root);
-    SendText(message);
 }
 
 void Protocol::SendWakeWordDetected(const std::string& wake_word) {
     cJSON* root = cJSON_CreateObject();
+    if (!root) return;
     cJSON_AddStringToObject(root, "session_id", session_id_.c_str());
     cJSON_AddStringToObject(root, "type", "listen");
     cJSON_AddStringToObject(root, "state", "detect");
     cJSON_AddStringToObject(root, "text", wake_word.c_str());
     auto json_str = cJSON_PrintUnformatted(root);
-    std::string message(json_str);
-    cJSON_free(json_str);
+    if (json_str) {
+        std::string message(json_str);
+        cJSON_free(json_str);
+        SendText(message);
+    }
     cJSON_Delete(root);
-    SendText(message);
 }
 
 void Protocol::SendStartListening(ListeningMode mode) {
     ESP_LOGI(TAG, "SendStartListening mode=%d session=%s",
              static_cast<int>(mode), session_id_.c_str());
     cJSON* root = cJSON_CreateObject();
+    if (!root) return;
     cJSON_AddStringToObject(root, "session_id", session_id_.c_str());
     cJSON_AddStringToObject(root, "type", "listen");
     cJSON_AddStringToObject(root, "state", "start");
@@ -81,39 +88,45 @@ void Protocol::SendStartListening(ListeningMode mode) {
         cJSON_AddStringToObject(root, "mode", "manual");
     }
     auto json_str = cJSON_PrintUnformatted(root);
-    std::string message(json_str);
-    cJSON_free(json_str);
+    if (json_str) {
+        std::string message(json_str);
+        cJSON_free(json_str);
+        SendText(message);
+    }
     cJSON_Delete(root);
-    SendText(message);
 }
 
 void Protocol::SendStopListening() {
     cJSON* root = cJSON_CreateObject();
+    if (!root) return;
     cJSON_AddStringToObject(root, "session_id", session_id_.c_str());
     cJSON_AddStringToObject(root, "type", "listen");
     cJSON_AddStringToObject(root, "state", "stop");
     auto json_str = cJSON_PrintUnformatted(root);
-    std::string message(json_str);
-    cJSON_free(json_str);
+    if (json_str) {
+        std::string message(json_str);
+        cJSON_free(json_str);
+        SendText(message);
+    }
     cJSON_Delete(root);
-    SendText(message);
 }
 
 void Protocol::SendMcpMessage(const std::string& payload) {
-    // payload is already valid JSON, embed it directly
-    cJSON* root = cJSON_CreateObject();
-    cJSON_AddStringToObject(root, "session_id", session_id_.c_str());
-    cJSON_AddStringToObject(root, "type", "mcp");
-    cJSON* payload_obj = cJSON_Parse(payload.c_str());
-    if (payload_obj) {
-        cJSON_AddItemToObject(root, "payload", payload_obj);
+    // payload is already valid JSON string. Directly embed it without allocating
+    // hundreds of cJSON tree nodes and formatting buffers, avoiding out-of-memory aborts.
+    std::string message;
+    message.reserve(64 + payload.length());
+    message += "{\"session_id\":\"";
+    message += session_id_;
+    message += "\",\"type\":\"mcp\",\"payload\":";
+    if (!payload.empty() && (payload.front() == '{' || payload.front() == '[')) {
+        message += payload;
     } else {
-        cJSON_AddStringToObject(root, "payload", payload.c_str());
+        message += "\"";
+        message += payload;
+        message += "\"";
     }
-    auto json_str = cJSON_PrintUnformatted(root);
-    std::string message(json_str);
-    cJSON_free(json_str);
-    cJSON_Delete(root);
+    message += "}";
     SendText(message);
 }
 

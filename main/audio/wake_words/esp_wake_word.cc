@@ -78,8 +78,8 @@ bool EspWakeWord::CreateWakeNetLocked() {
     ESP_LOGI(TAG, "Creating WakeNet (free=%u, largest=%u)",
              static_cast<unsigned>(free_heap),
              static_cast<unsigned>(largest_block));
-    if (free_heap < 35000 || largest_block < 8192) {
-        ESP_LOGW(TAG, "Insufficient contiguous SRAM for WakeNet (free=%u, largest=%u, need free>=35000, largest>=8192); skipping to avoid crash",
+    if (free_heap < 26000 || largest_block < 8192) {
+        ESP_LOGW(TAG, "Insufficient contiguous SRAM for WakeNet (free=%u, largest=%u, need free>=26000, largest>=8192); skipping to avoid crash",
                  static_cast<unsigned>(free_heap), static_cast<unsigned>(largest_block));
         return false;
     }

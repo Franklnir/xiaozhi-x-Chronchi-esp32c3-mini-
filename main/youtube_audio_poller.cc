@@ -628,16 +628,12 @@ void YouTubeAudioPoller::StreamAudio(const std::string& video_id, const std::str
     }
     size_t free_sram = heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
 
-    // Strictly 8k - 16k range as requested for optimal ESP32-C3 stability
-    std::string current_bitrate = "12k";
-    if (rssi >= -68 && free_sram >= 36000) {
-        current_bitrate = "16k";
-    } else if (rssi >= -78 && free_sram >= 28000) {
+    // Prioritaskan bitrate 16k untuk kualitas audio jernih dan lancar seperti semula
+    std::string current_bitrate = "16k";
+    if (rssi < -78 || free_sram < 26000) {
         current_bitrate = "12k";
-    } else {
-        current_bitrate = "8k";
     }
-    ESP_LOGI(TAG, "Adaptive Profile Selected: RSSI=%d dBm, FreeSRAM=%u B -> Bitrate=%s (Range: 8k - 16k)",
+    ESP_LOGI(TAG, "Adaptive Profile Selected: RSSI=%d dBm, FreeSRAM=%u B -> Bitrate=%s (Original High Quality)",
              rssi, (unsigned int)free_sram, current_bitrate.c_str());
 
     static const uint8_t OGGS_MAGIC[4] = {'O', 'g', 'g', 'S'};
@@ -781,7 +777,7 @@ void YouTubeAudioPoller::StreamAudio(const std::string& video_id, const std::str
                 if (frames_pushed > 10) {
                     if (!playback_idle) {
                         last_audio_active_us = now_us;
-                    } else if (now_us - last_audio_active_us > 2500000) { // 2.5s speaker silence
+                    } else if (now_us - last_audio_active_us > 3500000) { // 3.5s speaker silence tolerates jitter without premature drop
                         ESP_LOGW(TAG, "Audio starvation detected! Speaker is silent at br=%s, auto-recovering...", current_bitrate.c_str());
                         if (current_bitrate == "16k") current_bitrate = "12k";
                         else if (current_bitrate == "12k") current_bitrate = "8k";

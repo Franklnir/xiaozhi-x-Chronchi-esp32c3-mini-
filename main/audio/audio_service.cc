@@ -590,7 +590,7 @@ void AudioService::EnableWakeWordDetection(bool enable) {
     }
 
     if (enable && YouTubeAudioPoller::GetInstance().IsPlaying()) {
-        ESP_LOGD(TAG, "Cannot enable wake word detection: YouTube is playing/active");
+        ESP_LOGI(TAG, "Wake word diblokir: lagu YouTube sedang diputar/aktif");
         return;
     }
 

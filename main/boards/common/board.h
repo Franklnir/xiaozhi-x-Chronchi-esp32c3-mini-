@@ -83,6 +83,8 @@ public:
     virtual std::string GetBoardJson() = 0;
     virtual std::string GetDeviceStatusJson() = 0;
     virtual void OnListeningAutoStop() { }
+    virtual std::string GetButtonMode() { return "normal"; }
+    virtual bool SetButtonMode(const std::string& mode) { (void)mode; return false; }
 };
 
 #define DECLARE_BOARD(BOARD_CLASS_NAME) \

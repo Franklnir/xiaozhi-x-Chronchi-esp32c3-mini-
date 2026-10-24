@@ -1610,12 +1610,17 @@ void Application::HandleStartListeningEvent() {
 
     // Push-to-talk can always interrupt local song playback.
     StopLocalSongPlayback(false);
+    if (YouTubeAudioPoller::GetInstance().IsPlaying()) {
+        YouTubeAudioPoller::GetInstance().Abort();
+    }
 
     if (!protocol_) {
         ESP_LOGE(TAG, "Protocol not initialized");
         return;
     }
     
+    audio_service_.EnableWakeWordDetection(false);
+
     if (state == kDeviceStateIdle) {
         if (!protocol_->IsAudioChannelOpened()) {
             SetDeviceState(kDeviceStateConnecting);
@@ -1628,6 +1633,8 @@ void Application::HandleStartListeningEvent() {
         SetListeningMode(kListeningModeManualStop);
     } else if (state == kDeviceStateSpeaking) {
         AbortSpeaking(kAbortReasonNone);
+        SetListeningMode(kListeningModeManualStop);
+    } else if (state == kDeviceStateListening) {
         SetListeningMode(kListeningModeManualStop);
     }
 }

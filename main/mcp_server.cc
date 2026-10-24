@@ -50,6 +50,85 @@ void McpServer::AddCommonTools() {
             return board.GetDeviceStatusJson();
         });
 
+    auto handle_set_button_mode = [&board](const PropertyList& properties) -> ReturnValue {
+        std::string mode_str = properties["mode"].value<std::string>();
+        ESP_LOGI(TAG, "Tool Call: set_button_mode: mode=\"%s\"", mode_str.c_str());
+
+        std::string lower = mode_str;
+        std::transform(lower.begin(), lower.end(), lower.begin(), [](unsigned char c) { return std::tolower(c); });
+
+        std::string new_mode = "normal";
+        if (lower.find("hold") != std::string::npos ||
+            lower.find("tahan") != std::string::npos ||
+            lower.find("push") != std::string::npos) {
+            new_mode = "hold";
+        }
+
+        board.SetButtonMode(new_mode);
+
+        cJSON* res = cJSON_CreateObject();
+        cJSON_AddBoolToObject(res, "success", true);
+        cJSON_AddStringToObject(res, "current_mode", new_mode.c_str());
+        if (new_mode == "hold") {
+            cJSON_AddStringToObject(res, "mode_name", "Mode Tahan Tombol (Push-to-Talk)");
+            cJSON_AddStringToObject(res, "instruction", 
+                "Mode tombol berhasil diubah ke Mode Tahan Tombol (Push-to-Talk). "
+                "Beritahu pengguna dengan ramah: Tekan dan tahan tombol fisik GPIO 3 saat berbicara, "
+                "lalu lepaskan setelah selesai berbicara. Fungsi tahan tombol untuk konfigurasi WiFi telah dinonaktifkan.");
+        } else {
+            cJSON_AddStringToObject(res, "mode_name", "Mode Tombol Biasa (Normal)");
+            cJSON_AddStringToObject(res, "instruction", 
+                "Mode tombol berhasil diubah kembali ke Mode Normal. "
+                "Beritahu pengguna dengan ramah: Sekarang tombol fisik GPIO 3 cukup ditekan sekali untuk mulai berbicara, "
+                "dan menahan tombol selama 2.5 detik akan masuk ke mode konfigurasi WiFi.");
+        }
+        return res;
+    };
+
+    AddTool("self.button.set_mode",
+        "Ubah mode tombol fisik GPIO 3. Gunakan 'hold' untuk mode tekan tahan tombol untuk berbicara (Push-to-Talk) atau 'normal' untuk mode klik biasa.",
+        PropertyList({
+            Property("mode", kPropertyTypeString)
+        }),
+        handle_set_button_mode);
+
+    AddTool("self.system.set_button_mode",
+        "Ubah mode tombol fisik GPIO 3 antara 'hold' (tekan tahan) atau 'normal' (biasa).",
+        PropertyList({
+            Property("mode", kPropertyTypeString)
+        }),
+        handle_set_button_mode);
+
+    auto handle_get_button_mode = [&board](const PropertyList& properties) -> ReturnValue {
+        std::string cur_mode = board.GetButtonMode();
+        ESP_LOGI(TAG, "Tool Call: get_button_mode: current=\"%s\"", cur_mode.c_str());
+
+        cJSON* res = cJSON_CreateObject();
+        cJSON_AddStringToObject(res, "current_mode", cur_mode.c_str());
+        if (cur_mode == "hold") {
+            cJSON_AddStringToObject(res, "current_mode_name", "Mode Tahan Tombol (Push-to-Talk)");
+        } else {
+            cJSON_AddStringToObject(res, "current_mode_name", "Mode Tombol Biasa (Normal)");
+        }
+        cJSON_AddStringToObject(res, "hold_mode_description", 
+            "Mode Tahan Tombol: Tekan dan tahan tombol GPIO 3 selama berbicara, lalu lepaskan tombol setelah selesai bicara agar Xiaozhi menjawab. Menahan tombol lama TIDAK AKAN masuk ke konfigurasi WiFi.");
+        cJSON_AddStringToObject(res, "normal_mode_description", 
+            "Mode Tombol Biasa: Cukup tekan tombol GPIO 3 sekali untuk mulai berbicara. Menahan tombol selama 2.5 detik akan masuk ke konfigurasi WiFi, atau klik ganda berganti ke mode Chronos.");
+        cJSON_AddStringToObject(res, "instruction", 
+            "Jelaskan kepada pengguna: 1) Mode tombol apa yang sedang aktif saat ini. 2) Penjelasan cara kerja Mode Tahan Tombol. 3) Penjelasan cara kerja Mode Tombol Biasa.");
+        return res;
+    };
+
+    AddTool("self.button.get_mode",
+        "Baca mode tombol fisik GPIO 3 saat ini ('normal' atau 'hold') dan dapatkan penjelasan lengkap cara kerja kedua mode tersebut.",
+        PropertyList(),
+        handle_get_button_mode);
+
+    AddTool("self.system.get_button_mode",
+        "Mendapatkan mode tombol saat ini dan penjelasan Mode Tahan Tombol serta Mode Biasa.",
+        PropertyList(),
+        handle_get_button_mode);
+
     AddTool("self.audio_speaker.set_volume", 
         "Set the volume of the audio speaker (0-100).",
         PropertyList({

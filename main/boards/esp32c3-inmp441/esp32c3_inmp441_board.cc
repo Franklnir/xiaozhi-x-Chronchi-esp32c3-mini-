@@ -50,6 +50,8 @@ private:
     bool wait_for_wake_word_ = false;
     bool boot_button_pressed_ = false;
     bool youtube_interrupted_ = false;
+    std::string button_mode_ = "normal";
+    bool is_holding_to_talk_ = false;
     DeviceState last_observed_state_ = kDeviceStateUnknown;
 
     bool is_es8311_detected_ = false;
@@ -173,11 +175,35 @@ private:
                 }
                 app.SetDeviceState(kDeviceStateIdle);
                 app.GetAudioService().EnableWakeWordDetection(true);
+                return;
             }
+
+            if (button_mode_ == "hold") {
+                ESP_LOGI(TAG, "GPIO 3 PressDown [Hold-to-Talk Mode]: StartListening");
+                is_holding_to_talk_ = true;
+                last_voice_activity_us_ = esp_timer_get_time();
+                wait_for_wake_word_ = false;
+                app.StartListening();
+                return;
+            }
+
             mode_selector_->OnPressDown();
         });
         boot_button_.OnPressUp([this]() {
             boot_button_pressed_ = false;
+            if (youtube_interrupted_) {
+                youtube_interrupted_ = false;
+                return;
+            }
+            if (button_mode_ == "hold") {
+                if (is_holding_to_talk_) {
+                    is_holding_to_talk_ = false;
+                    ESP_LOGI(TAG, "GPIO 3 PressUp [Hold-to-Talk Mode]: StopListening");
+                    auto& app = Application::GetInstance();
+                    app.StopListening();
+                }
+                return;
+            }
             mode_selector_->OnPressUp();
         });
 
@@ -244,6 +270,11 @@ private:
         if (boot_button_pressed_) {
             last_voice_activity_us_ = now_us;
             wait_for_wake_word_ = false;
+            return;
+        }
+
+        if (button_mode_ == "hold") {
+            // In hold-to-talk mode, do not auto-reopen listening channel.
             return;
         }
 
@@ -373,6 +404,13 @@ public:
         ESP_LOGI(TAG, "  OLED: SDA=%d, SCL=%d (%dx%d)", 
                  DISPLAY_SDA_PIN, DISPLAY_SCL_PIN, DISPLAY_WIDTH, DISPLAY_HEIGHT);
 
+        Settings settings("system", false);
+        button_mode_ = settings.GetString("btn_mode", "normal");
+        if (button_mode_ != "hold") {
+            button_mode_ = "normal";
+        }
+        ESP_LOGI(TAG, "Button mode initialized: %s", button_mode_.c_str());
+
         if (ModeStore::Current() == BootMode::Xiaozhi) {
             mode_selector_ = std::make_unique<ModeSelector>(
                 BootMode::Xiaozhi, GetDisplay(),
@@ -400,6 +438,37 @@ public:
             InitializeButtons();
             InitializeHandsFreeMode();
         }
+    }
+
+    std::string GetButtonMode() override {
+        return button_mode_;
+    }
+
+    bool SetButtonMode(const std::string& mode) override {
+        std::string lower = mode;
+        std::transform(lower.begin(), lower.end(), lower.begin(), [](unsigned char c) { return std::tolower(c); });
+        
+        std::string new_mode = "normal";
+        if (lower.find("hold") != std::string::npos || 
+            lower.find("tahan") != std::string::npos || 
+            lower.find("push") != std::string::npos) {
+            new_mode = "hold";
+        }
+
+        button_mode_ = new_mode;
+        Settings settings("system", true);
+        settings.SetString("btn_mode", new_mode);
+        ESP_LOGI(TAG, "Button mode updated to: %s", new_mode.c_str());
+
+        auto display = GetDisplay();
+        if (display != nullptr) {
+            if (new_mode == "hold") {
+                display->ShowNotification("Mode: Tahan Bicara", 2500);
+            } else {
+                display->ShowNotification("Mode: Tombol Normal", 2500);
+            }
+        }
+        return true;
     }
 
     void OnListeningAutoStop() override {

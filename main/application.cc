@@ -674,7 +674,7 @@ void Application::HandleActivationDoneEvent() {
     auto& board = Board::GetInstance();
     board.SetPowerSaveLevel(PowerSaveLevel::LOW_POWER);
 
-    // Start YouTube audio poller to check for pending song commands
+    // Start YouTube audio player in on-demand mode (idle until user request)
     YouTubeAudioPoller::GetInstance().Start();
 }
 

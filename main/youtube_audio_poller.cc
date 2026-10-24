@@ -38,18 +38,26 @@ std::string YouTubeAudioPoller::GetServerDomain() {
 
 std::string YouTubeAudioPoller::GetBaseUrl() {
     std::string domain = GetServerDomain();
-    if (domain.rfind("http://", 0) == 0 || domain.rfind("https://", 0) == 0) {
-        return domain;
+    while (!domain.empty() && domain.back() == '/') {
+        domain.pop_back();
+    }
+    // Always force plain HTTP (Port 80) on ESP32-C3 to prevent mbedTLS SSL handshake
+    // from consuming 30KB+ SRAM and triggering Out-Of-Memory aborts.
+    if (domain.rfind("https://", 0) == 0) {
+        domain = domain.substr(8);
+    } else if (domain.rfind("http://", 0) == 0) {
+        domain = domain.substr(7);
+    }
+    // Remove :443 if user configured port 443
+    size_t colon_pos = domain.rfind(":443");
+    if (colon_pos != std::string::npos && colon_pos == domain.length() - 4) {
+        domain = domain.substr(0, colon_pos);
     }
     return "http://" + domain;
 }
 
 std::string YouTubeAudioPoller::GetStreamUrl() {
-    std::string domain = GetServerDomain();
-    if (domain.rfind("http://", 0) == 0 || domain.rfind("https://", 0) == 0) {
-        return domain;
-    }
-    return "http://" + domain;
+    return GetBaseUrl();
 }
 
 std::string YouTubeAudioPoller::GetCurrentTitle() const {

@@ -84,6 +84,18 @@ bool SettingsManager::LoadFromNvs() {
             nvs_close(sys_nvs);
         }
     }
+    while (!settings_.server_domain.empty() && settings_.server_domain.back() == '/') {
+        settings_.server_domain.pop_back();
+    }
+    if (settings_.server_domain.rfind("https://", 0) == 0) {
+        settings_.server_domain = settings_.server_domain.substr(8);
+    } else if (settings_.server_domain.rfind("http://", 0) == 0) {
+        settings_.server_domain = settings_.server_domain.substr(7);
+    }
+    size_t colon_pos = settings_.server_domain.rfind(":443");
+    if (colon_pos != std::string::npos && colon_pos == settings_.server_domain.length() - 4) {
+        settings_.server_domain = settings_.server_domain.substr(0, colon_pos);
+    }
     if (settings_.server_domain.empty()) {
         settings_.server_domain = "xiaozhiscig.biz.id";
     }
@@ -383,7 +395,20 @@ std::string SettingsManager::GetServerDomain() const {
     return settings_.server_domain.empty() ? "xiaozhiscig.biz.id" : settings_.server_domain;
 }
 void SettingsManager::SetServerDomain(const std::string& domain) {
-    settings_.server_domain = domain.empty() ? "xiaozhiscig.biz.id" : domain;
+    std::string clean = domain;
+    while (!clean.empty() && clean.back() == '/') {
+        clean.pop_back();
+    }
+    if (clean.rfind("https://", 0) == 0) {
+        clean = clean.substr(8);
+    } else if (clean.rfind("http://", 0) == 0) {
+        clean = clean.substr(7);
+    }
+    size_t colon_pos = clean.rfind(":443");
+    if (colon_pos != std::string::npos && colon_pos == clean.length() - 4) {
+        clean = clean.substr(0, colon_pos);
+    }
+    settings_.server_domain = clean.empty() ? "xiaozhiscig.biz.id" : clean;
     Save();
 }
 

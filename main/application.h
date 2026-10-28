@@ -132,6 +132,7 @@ public:
     void ClearSongConfirmation();
     void OnSongNotFound();
     bool IsSongConfirmationPending() const { return song_confirmation_pending_; }
+    const std::string& GetSongConfirmDuration() const { return song_confirm_duration_; }
 
 private:
     Application();
@@ -168,6 +169,9 @@ private:
     int64_t last_wake_word_accepted_us_ = 0;
     int64_t listening_started_at_us_ = 0;
     int64_t standby_until_us_ = 0;  // Hands-free blocked until this time
+    bool voice_detected_in_session_ = false;
+    bool waiting_for_server_response_ = false;
+    int64_t wait_response_started_at_us_ = 0;
     int clock_ticks_ = 0;
     TaskHandle_t activation_task_handle_ = nullptr;
 

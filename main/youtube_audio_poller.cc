@@ -502,7 +502,7 @@ bool YouTubeAudioPoller::ReportStatus(const std::string& status, const std::stri
     }
     cJSON_Delete(root);
 
-    http->SetTimeout(6000);
+    http->SetTimeout(1200);
     http->SetHeader("Content-Type", "application/json");
     http->SetHeader("User-Agent", "ESP32-XiaoZhi");
     http->SetHeader("Device-Id", mac.c_str());
@@ -649,6 +649,7 @@ void YouTubeAudioPoller::StreamAudio(const std::string& video_id, const std::str
     static const int kMaxRetries = 3;
     int64_t last_rssi_check_us = 0;
     int8_t live_rssi = rssi;
+    bool song_completed = false;
 
     int last_status_sec = -1;
     auto update_duration_progress = [&](int frames) {
@@ -780,6 +781,14 @@ void YouTubeAudioPoller::StreamAudio(const std::string& video_id, const std::str
                     if (!playback_idle) {
                         last_audio_active_us = now_us;
                     } else if (now_us - last_audio_active_us > 3500000) { // 3.5s speaker silence tolerates jitter without premature drop
+                        int cur_sec = (int)(frames_pushed * 0.060f);
+                        if (total_duration_sec_ > 0 && cur_sec >= (total_duration_sec_ - 4)) {
+                            ESP_LOGI(TAG, ">> DETEKSI: Speaker hening di akhir durasi lagu (%s / %s) -> Lagu selesai diputar! <<",
+                                     FormatSecondsToDuration(cur_sec).c_str(), total_duration_str_.c_str());
+                            need_downshift = false;
+                            song_completed = true;
+                            break;
+                        }
                         ESP_LOGW(TAG, "Audio starvation detected! Speaker is silent at br=%s, auto-recovering...", current_bitrate.c_str());
                         if (current_bitrate == "16k") current_bitrate = "12k";
                         else if (current_bitrate == "12k") current_bitrate = "8k";
@@ -811,6 +820,14 @@ void YouTubeAudioPoller::StreamAudio(const std::string& video_id, const std::str
                 int to_read = (int)std::min((size_t)1024, avail);
                 int n = http->Read(reinterpret_cast<char*>(ogg_buf.get() + ogg_len), to_read);
                 if (n < 0) {
+                    int cur_sec = (int)(frames_pushed * 0.060f);
+                    if (total_duration_sec_ > 0 && cur_sec >= (total_duration_sec_ - 4)) {
+                        ESP_LOGI(TAG, ">> DETEKSI: Stream terputus/selesai di akhir durasi lagu (%s / %s) -> Normal Selesai! <<",
+                                 FormatSecondsToDuration(cur_sec).c_str(), total_duration_str_.c_str());
+                        need_downshift = false;
+                        song_completed = true;
+                        break;
+                    }
                     ESP_LOGW(TAG, "HTTP read error or stream closed (ret=%d, total=%u, frames=%d)",
                              n, (unsigned int)total_bytes_streamed, frames_pushed);
                     if (frames_pushed > 10) {
@@ -829,8 +846,25 @@ void YouTubeAudioPoller::StreamAudio(const std::string& video_id, const std::str
                     break;
                 }
                 if (n == 0) {
-                    ESP_LOGI(TAG, "Stream EOF reached (session_bytes=%u, session_frames=%d, total=%u, frames_pushed=%d)",
-                             (unsigned int)session_bytes, session_frames, (unsigned int)total_bytes_streamed, frames_pushed);
+                    int cur_sec = (int)(frames_pushed * 0.060f);
+                    ESP_LOGI(TAG, "Stream EOF reached (session_bytes=%u, session_frames=%d, total=%u, frames_pushed=%d, cur_sec=%d, total_sec=%d)",
+                             (unsigned int)session_bytes, session_frames, (unsigned int)total_bytes_streamed, frames_pushed, cur_sec, total_duration_sec_);
+                    
+                    bool is_song_end = false;
+                    if (total_duration_sec_ > 0 && cur_sec >= (total_duration_sec_ - 4)) {
+                        is_song_end = true;
+                    } else if (total_duration_sec_ <= 0 && frames_pushed > 100) {
+                        is_song_end = true;
+                    }
+
+                    if (is_song_end) {
+                        ESP_LOGI(TAG, ">> DETEKSI: Stream audio mencapai EOF di akhir lagu (durasi: %s / %s) -> Lagu selesai! <<",
+                                 FormatSecondsToDuration(cur_sec).c_str(), total_duration_str_.c_str());
+                        need_downshift = false;
+                        song_completed = true;
+                        break;
+                    }
+
                     // YouTube CDN sometimes drops TCP prematurely after 1-2 minutes.
                     // Auto-resume from offset start_sec if frames were pushed.
                     if (frames_pushed > 0 && session_bytes > 0 && eof_retries < 2 && !abort_requested_.load()) {
@@ -843,6 +877,7 @@ void YouTubeAudioPoller::StreamAudio(const std::string& video_id, const std::str
                             ESP_LOGI(TAG, "Confirmed end of audio stream at %.2fs", frames_pushed * 0.060f);
                         }
                         need_downshift = false;
+                        song_completed = true;
                     }
                     break;
                 }
@@ -979,15 +1014,30 @@ void YouTubeAudioPoller::StreamAudio(const std::string& video_id, const std::str
                             downshift_retries = 0;
                             eof_retries = 0;
                         }
+
+                        // Deteksi durasi lagu selesai secara real-time:
+                        int cur_sec = (int)(frames_pushed * 0.060f);
+                        if (total_duration_sec_ > 0 && cur_sec >= total_duration_sec_) {
+                            ESP_LOGI(TAG, ">> DETEKSI: Lagu telah mencapai total durasi penuh (%s / %s, frames=%d) -> Selesai! <<",
+                                     FormatSecondsToDuration(cur_sec).c_str(), total_duration_str_.c_str(), frames_pushed);
+                            need_downshift = false;
+                            song_completed = true;
+                            break;
+                        }
                     }
 
                     memmove(ogg_buf.get(), ogg_buf.get() + page_total, ogg_len - page_total);
                     ogg_len -= page_total;
 
-                    if (abort_requested_.load()) {
-                        ESP_LOGI(TAG, "Audio stream aborted by user request");
+                    if (abort_requested_.load() || song_completed) {
+                        if (abort_requested_.load()) {
+                            ESP_LOGI(TAG, "Audio stream aborted by user request");
+                        }
                         break;
                     }
+                }
+                if (abort_requested_.load() || song_completed) {
+                    break;
                 }
             }
         } catch (const std::exception& e) {
@@ -995,7 +1045,7 @@ void YouTubeAudioPoller::StreamAudio(const std::string& video_id, const std::str
         }
 
         // Flush remaining prebuffer if stream interrupted before reaching prebuffer target
-        if (!prebuffer.empty()) {
+        if (!prebuffer.empty() && !song_completed) {
             for (auto& p : prebuffer) {
                 app.GetAudioService().PushPacketToDecodeQueue(std::move(p), true);
                 frames_pushed++;
@@ -1011,12 +1061,12 @@ void YouTubeAudioPoller::StreamAudio(const std::string& video_id, const std::str
         }
         http->Close();
 
-        if (!need_downshift || abort_requested_.load()) {
+        if (!need_downshift || abort_requested_.load() || song_completed) {
             break;
         }
     }
-    ESP_LOGI(TAG, "Stream finished (total %zu bytes read, frames_pushed=%d, aborted=%d)",
-             total_bytes_streamed, frames_pushed, abort_requested_.load());
+    ESP_LOGI(TAG, "Stream finished (total %zu bytes read, frames_pushed=%d, aborted=%d, song_completed=%d)",
+             total_bytes_streamed, frames_pushed, abort_requested_.load(), song_completed);
 
     bool was_aborted = abort_requested_.load();
     bool playback_succeeded = (frames_pushed > 10 && total_bytes_streamed > 2048);
@@ -1024,9 +1074,9 @@ void YouTubeAudioPoller::StreamAudio(const std::string& video_id, const std::str
     if (playback_succeeded && !was_aborted) {
         ESP_LOGI(TAG, ">> DETEKSI: Stream audio selesai diunduh. Menunggu speaker memainkan sisa buffer audio... <<");
         int wait_ms = 0;
-        while (!app.GetAudioService().IsPlaybackIdle() && wait_ms < 6000 && !abort_requested_.load()) {
-            vTaskDelay(pdMS_TO_TICKS(100));
-            wait_ms += 100;
+        while (!app.GetAudioService().IsPlaybackIdle() && wait_ms < 2500 && !abort_requested_.load()) {
+            vTaskDelay(pdMS_TO_TICKS(30));
+            wait_ms += 30;
             update_duration_progress(frames_pushed);
         }
     } else {
@@ -1037,6 +1087,9 @@ void YouTubeAudioPoller::StreamAudio(const std::string& video_id, const std::str
     is_playing_ = false;
 
     int final_sec = (int)(frames_pushed * 0.060f);
+    if (total_duration_sec_ > 0 && (final_sec > total_duration_sec_ || final_sec >= total_duration_sec_ - 2)) {
+        final_sec = total_duration_sec_;
+    }
     std::string final_dur_str = FormatSecondsToDuration(final_sec);
     current_duration_sec_ = final_sec;
 
@@ -1058,6 +1111,18 @@ void YouTubeAudioPoller::StreamAudio(const std::string& video_id, const std::str
             display->SetEmotion("neutral");
             display->SetFaceState(FaceState::Listening);
         }
+
+        // Release buffer OGG secepatnya agar heap internal SRAM lapang
+        ogg_buf.reset();
+
+        // 1. LANGSUNG MASUK KE MODE LISTENING SECARA INSTAN TANPA MENUNGGU!
+        ESP_LOGI(TAG, ">> DETEKSI: Lagu selesai diputar -> LANGSUNG MASUK KE MODE LISTENING <<");
+        app.Schedule([&app]() {
+            app.EnterListeningModeAfterSong();
+        });
+
+        // 2. Laporkan status "finished" secara cepat dengan timeout 1.2s tanpa menghalangi listening
+        ReportStatus("finished", video_id);
     } else if (was_aborted) {
         ESP_LOGI(TAG, ">> DETEKSI: Lagu YouTube \"%s\" DIHENTIKAN (Durasi: %s / %s) <<",
                  title.c_str(), final_dur_str.c_str(), total_duration_str_.c_str());
@@ -1069,6 +1134,13 @@ void YouTubeAudioPoller::StreamAudio(const std::string& video_id, const std::str
             display->SetEmotion("neutral");
             display->SetFaceState(FaceState::Idle);
         }
+        ogg_buf.reset();
+        ReportStatus("stopped", video_id);
+        app.SetDeviceState(kDeviceStateIdle);
+        Board::GetInstance().SetPowerSaveLevel(PowerSaveLevel::LOW_POWER);
+        esp_wifi_set_ps(WIFI_PS_MIN_MODEM);
+        vTaskDelay(pdMS_TO_TICKS(100));
+        app.GetAudioService().EnableWakeWordDetection(true);
     } else {
         ESP_LOGW(TAG, ">> DETEKSI: Gagal streaming lagu YouTube \"%s\" (frames=%d, bytes=%zu) <<",
                  title.c_str(), frames_pushed, total_bytes_streamed);
@@ -1079,30 +1151,12 @@ void YouTubeAudioPoller::StreamAudio(const std::string& video_id, const std::str
             display->SetEmotion("neutral");
             display->SetFaceState(FaceState::Idle);
         }
-    }
-
-    // Release the 3KB OGG buffer immediately so heap contiguous memory expands
-    ogg_buf.reset();
-
-    // 1. Report playback end status via lightweight HTTP while WakeNet is not loaded (free SRAM > 35KB)
-    std::string end_status = was_aborted ? "stopped" : (playback_succeeded ? "finished" : "failed");
-    ReportStatus(end_status, video_id);
-    vTaskDelay(pdMS_TO_TICKS(100));
-
-    if (playback_succeeded && !was_aborted) {
-        // Otomatis langsung masuk ke mode LISTENING HANYA jika lagu benar-benar sudah selesai diputar!
-        ESP_LOGI(TAG, ">> DETEKSI: Lagu selesai diputar -> LANGSUNG MASUK KE MODE LISTENING <<");
-        app.Schedule([&app]() {
-            app.EnterListeningModeAfterSong();
-        });
-    } else {
-        // 2. Cleanly restore device state to Idle/Standby
+        ogg_buf.reset();
+        ReportStatus("failed", video_id);
         app.SetDeviceState(kDeviceStateIdle);
         Board::GetInstance().SetPowerSaveLevel(PowerSaveLevel::LOW_POWER);
         esp_wifi_set_ps(WIFI_PS_MIN_MODEM);
         vTaskDelay(pdMS_TO_TICKS(100));
-
-        // 3. Re-enable WakeWord detection in clean, unfragmented memory
         app.GetAudioService().EnableWakeWordDetection(true);
     }
 }

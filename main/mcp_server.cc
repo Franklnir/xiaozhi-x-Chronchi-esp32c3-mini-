@@ -180,6 +180,9 @@ void McpServer::AddCommonTools() {
             
             auto& app = Application::GetInstance();
             if (app.IsSongConfirmationPending()) {
+                if (duration.empty() || duration == "--:--") {
+                    duration = app.GetSongConfirmDuration();
+                }
                 ESP_LOGI(TAG, "Tool Call: self.audio.play_youtube (confirmed): title=\"%s\", vid=%s, dur=%s", 
                          title.c_str(), video_id.c_str(), duration.c_str());
                 app.ClearSongConfirmation();

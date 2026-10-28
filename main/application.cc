@@ -524,8 +524,8 @@ void Application::Run() {
                                 speech_started_at_us_ = now_us;
                             }
                             speech_duration_us_ = now_us - speech_started_at_us_;
-                            // Valid user speech must last at least 400ms (not a click/pop/breath)
-                            if (speech_duration_us_ >= 400000LL) {
+                            // Valid user speech must last at least 300ms (not a click/pop/breath)
+                            if (speech_duration_us_ >= 300000LL) {
                                 voice_detected_in_session_ = true;
                             }
                         }
@@ -606,9 +606,9 @@ void Application::Run() {
                 listening_started_at_us_ > 0) {
                 int64_t now_us = esp_timer_get_time();
                 if (!voice_detected_in_session_ && !waiting_for_server_response_ && !song_confirmation_pending_) {
-                    // No speech detected from user for 8 seconds: quietly close channel without saying please wait
-                    if (now_us - listening_started_at_us_ > 8LL * 1000000LL) {
-                        ESP_LOGI(TAG, "No voice detected for 8s, closing audio channel quietly");
+                    // No speech detected from user for 15 seconds: quietly close channel without saying please wait
+                    if (now_us - listening_started_at_us_ > 15LL * 1000000LL) {
+                        ESP_LOGI(TAG, "No voice detected for 15s, closing audio channel quietly");
                         ArmWakeWordCooldown(kWakeWordCooldownAfterCloseUs);
                         CloseAudioChannel();
                     }

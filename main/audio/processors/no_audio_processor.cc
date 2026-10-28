@@ -5,9 +5,9 @@
 #define TAG "NoAudioProcessor"
 
 namespace {
-constexpr int32_t kSpeechPeakThreshold = 1800;
-constexpr int32_t kSilencePeakThreshold = 900;
-constexpr int kSpeechFramesToTrigger = 4;
+constexpr int32_t kSpeechPeakThreshold = 1300;
+constexpr int32_t kSilencePeakThreshold = 750;
+constexpr int kSpeechFramesToTrigger = 3;
 constexpr int kVadSilenceHoldMs = 1200;
 }
 

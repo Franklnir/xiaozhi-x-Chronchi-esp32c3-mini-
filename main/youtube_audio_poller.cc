@@ -161,7 +161,7 @@ void YouTubeAudioPoller::Start() {
     xTaskCreate([](void* arg) {
         static_cast<YouTubeAudioPoller*>(arg)->TaskLoop();
         vTaskDelete(NULL);
-    }, "yt_poller", 3584, this, 2, &task_handle_);
+    }, "yt_poller", 4608, this, 2, &task_handle_);
     ESP_LOGI(TAG, "YouTubeAudioPoller started");
 }
 
@@ -1115,14 +1115,15 @@ void YouTubeAudioPoller::StreamAudio(const std::string& video_id, const std::str
         // Release buffer OGG secepatnya agar heap internal SRAM lapang
         ogg_buf.reset();
 
-        // 1. LANGSUNG MASUK KE MODE LISTENING SECARA INSTAN TANPA MENUNGGU!
-        ESP_LOGI(TAG, ">> DETEKSI: Lagu selesai diputar -> LANGSUNG MASUK KE MODE LISTENING <<");
+        // 1. Laporkan status "finished" terlebih dahulu dan pastikan socket HTTP selesai/tertutup
+        ReportStatus("finished", video_id);
+        vTaskDelay(pdMS_TO_TICKS(50));
+
+        // 2. Sekarang heap sudah kembali lega, jadwalkan masuk ke mode LISTENING
+        ESP_LOGI(TAG, ">> DETEKSI: Lagu selesai diputar -> Masuk ke mode LISTENING <<");
         app.Schedule([&app]() {
             app.EnterListeningModeAfterSong();
         });
-
-        // 2. Laporkan status "finished" secara cepat dengan timeout 1.2s tanpa menghalangi listening
-        ReportStatus("finished", video_id);
     } else if (was_aborted) {
         ESP_LOGI(TAG, ">> DETEKSI: Lagu YouTube \"%s\" DIHENTIKAN (Durasi: %s / %s) <<",
                  title.c_str(), final_dur_str.c_str(), total_duration_str_.c_str());

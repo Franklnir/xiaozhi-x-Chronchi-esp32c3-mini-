@@ -210,7 +210,6 @@ constexpr int64_t kSongConfirmWindowUs = 20LL * 1000000LL;
 constexpr int64_t kWakeWordStartupSuppressUs = 3LL * 1000000LL;
 constexpr int64_t kWakeWordDebounceUs = 2LL * 1000000LL;
 constexpr int64_t kWakeWordCooldownAfterCloseUs = 2LL * 1000000LL;
-constexpr int64_t kListeningStartupIgnoreVoiceUs = 1200LL * 1000LL;
 constexpr int64_t kListeningAutoStopGraceUs = 2500LL * 1000LL;
 constexpr int64_t kListeningMaxDurationUs = 30LL * 1000000LL;
 
@@ -515,29 +514,10 @@ void Application::Run() {
                 auto led = Board::GetInstance().GetLed();
                 led->OnStateChanged();
                 if (listening_mode_ == kListeningModeAutoStop &&
+                    !audio_service_.IsVoiceDetected() &&
                     !IsWifiResetConfirmationPending() &&
-                    !waiting_for_server_response_) {
-                    int64_t now_us = esp_timer_get_time();
-                    if (audio_service_.IsVoiceDetected()) {
-                        // Ignore popup chime, room echo, and mic startup noise during the first 1.2s of listening
-                        if (listening_started_at_us_ > 0 && (now_us - listening_started_at_us_ >= kListeningStartupIgnoreVoiceUs)) {
-                            if (voice_detected_first_at_us_ == 0) {
-                                voice_detected_first_at_us_ = now_us;
-                            }
-                            voice_detected_last_at_us_ = now_us;
-                            voice_detected_in_session_ = true;
-                        }
-                    } else if (voice_detected_in_session_ && !IsListeningGracePeriodActive()) {
-                        // Only trigger stop listening if voice lasted at least 250ms (not a random noise burst)
-                        if (voice_detected_last_at_us_ - voice_detected_first_at_us_ >= 250000LL) {
-                            HandleStopListeningEvent();
-                        } else {
-                            // Glitch / spike was too short to be speech, reset flags
-                            voice_detected_in_session_ = false;
-                            voice_detected_first_at_us_ = 0;
-                            voice_detected_last_at_us_ = 0;
-                        }
-                    }
+                    !IsListeningGracePeriodActive()) {
+                    HandleStopListeningEvent();
                 }
             }
         }
@@ -604,26 +584,7 @@ void Application::Run() {
                 !IsWifiResetConfirmationPending() &&
                 listening_started_at_us_ > 0) {
                 int64_t now_us = esp_timer_get_time();
-                if (!voice_detected_in_session_ && !waiting_for_server_response_ && !song_confirmation_pending_) {
-                    if (now_us - listening_started_at_us_ > 7LL * 1000000LL) {
-                        ESP_LOGI(TAG, "No voice detected for 7s, returning quietly to standby");
-                        Board::GetInstance().OnListeningAutoStop();
-                        ArmWakeWordCooldown(kWakeWordCooldownAfterCloseUs);
-                        CloseAudioChannel();
-                        SetDeviceState(kDeviceStateIdle);
-                        audio_service_.EnableWakeWordDetection(true);
-                    }
-                } else if (waiting_for_server_response_) {
-                    if (now_us - wait_response_started_at_us_ > 12LL * 1000000LL) {
-                        ESP_LOGW(TAG, "Server response timeout (12s), closing conversation");
-                        waiting_for_server_response_ = false;
-                        Board::GetInstance().OnListeningAutoStop();
-                        ArmWakeWordCooldown(kWakeWordCooldownAfterCloseUs);
-                        CloseAudioChannel();
-                        SetDeviceState(kDeviceStateIdle);
-                        audio_service_.EnableWakeWordDetection(true);
-                    }
-                } else if (now_us - listening_started_at_us_ > kListeningMaxDurationUs) {
+                if (now_us - listening_started_at_us_ > kListeningMaxDurationUs) {
                     ESP_LOGW(TAG, "Listening timeout, closing conversation");
                     Board::GetInstance().OnListeningAutoStop();
                     ArmWakeWordCooldown(kWakeWordCooldownAfterCloseUs);
@@ -946,11 +907,6 @@ void Application::InitializeProtocol() {
             auto display = Board::GetInstance().GetDisplay();
             display->SetChatMessage("system", "");
             ArmWakeWordCooldown(kWakeWordCooldownAfterCloseUs);
-            waiting_for_server_response_ = false;
-            voice_detected_in_session_ = false;
-            voice_detected_first_at_us_ = 0;
-            voice_detected_last_at_us_ = 0;
-            wait_response_started_at_us_ = 0;
             if (!YouTubeAudioPoller::GetInstance().IsPlaying()) {
                 SetDeviceState(kDeviceStateIdle);
             }
@@ -1699,8 +1655,6 @@ void Application::HandleStopListeningEvent() {
             protocol_->SendStopListening();
         }
         audio_service_.EnableVoiceProcessing(false);
-        waiting_for_server_response_ = true;
-        wait_response_started_at_us_ = esp_timer_get_time();
         auto display = Board::GetInstance().GetDisplay();
         if (display != nullptr) {
             display->SetStatus(Lang::Strings::PLEASE_WAIT);
@@ -1791,11 +1745,6 @@ void Application::HandleStateChangedEvent() {
         case kDeviceStateUnknown:
         case kDeviceStateIdle:
             listening_started_at_us_ = 0;
-            voice_detected_in_session_ = false;
-            voice_detected_first_at_us_ = 0;
-            voice_detected_last_at_us_ = 0;
-            waiting_for_server_response_ = false;
-            wait_response_started_at_us_ = 0;
             audio_service_.EnableVoiceProcessing(false);
             if (YouTubeAudioPoller::GetInstance().IsPlaying() || youtube_song_requested_) {
                 board.SetPowerSaveLevel(PowerSaveLevel::PERFORMANCE);
@@ -1825,11 +1774,6 @@ void Application::HandleStateChangedEvent() {
         case kDeviceStateConnecting:
             board.SetPowerSaveLevel(PowerSaveLevel::PERFORMANCE);
             listening_started_at_us_ = 0;
-            voice_detected_in_session_ = false;
-            voice_detected_first_at_us_ = 0;
-            voice_detected_last_at_us_ = 0;
-            waiting_for_server_response_ = false;
-            wait_response_started_at_us_ = 0;
             display->SetStatus(Lang::Strings::CONNECTING);
             display->SetEmotion("neutral");
             display->SetFaceState(FaceState::Idle);
@@ -1839,11 +1783,6 @@ void Application::HandleStateChangedEvent() {
         case kDeviceStateListening:
             board.SetPowerSaveLevel(PowerSaveLevel::PERFORMANCE);
             listening_started_at_us_ = esp_timer_get_time();
-            voice_detected_in_session_ = false;
-            voice_detected_first_at_us_ = 0;
-            voice_detected_last_at_us_ = 0;
-            waiting_for_server_response_ = false;
-            wait_response_started_at_us_ = 0;
             if (song_confirmation_pending_) {
                 display->SetStatus("Konfirmasi?");
             } else {
@@ -1870,11 +1809,6 @@ void Application::HandleStateChangedEvent() {
         case kDeviceStateSpeaking:
             board.SetPowerSaveLevel(PowerSaveLevel::PERFORMANCE);
             listening_started_at_us_ = 0;
-            voice_detected_in_session_ = false;
-            voice_detected_first_at_us_ = 0;
-            voice_detected_last_at_us_ = 0;
-            waiting_for_server_response_ = false;
-            wait_response_started_at_us_ = 0;
             display->SetStatus(Lang::Strings::SPEAKING);
             display->SetFaceState(FaceState::Speaking);
 
@@ -1927,11 +1861,6 @@ void Application::CloseAudioChannel() {
 void Application::SetListeningMode(ListeningMode mode) {
     listening_mode_ = mode;
     listening_started_at_us_ = esp_timer_get_time();
-    voice_detected_in_session_ = false;
-    voice_detected_first_at_us_ = 0;
-    voice_detected_last_at_us_ = 0;
-    waiting_for_server_response_ = false;
-    wait_response_started_at_us_ = 0;
     SetDeviceState(kDeviceStateListening);
 }
 

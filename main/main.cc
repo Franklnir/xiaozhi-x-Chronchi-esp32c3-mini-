@@ -12,17 +12,11 @@
 #include "chronchi/chronchi_mode.h"
 #include "mode/mode_store.h"
 #include "system_info.h"
-#include "esp_private/brownout.h"
 
 #define TAG "ModeManager"
 
 extern "C" void app_main(void)
 {
-    // Disable hardware brownout detector to prevent audio amplifier (MAX98357A) current spikes
-    // from triggering sudden resets when playing loud audio or wake-word chimes on USB power
-    esp_brownout_disable();
-    ESP_LOGI(TAG, "Hardware brownout detector disabled for audio amplifier stability");
-
     // Initialize NVS flash for WiFi configuration
     esp_err_t ret = nvs_flash_init();
     if (ret == ESP_ERR_NVS_NO_FREE_PAGES || ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {

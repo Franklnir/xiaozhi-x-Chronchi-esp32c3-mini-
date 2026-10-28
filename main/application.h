@@ -170,6 +170,8 @@ private:
     int64_t listening_started_at_us_ = 0;
     int64_t standby_until_us_ = 0;  // Hands-free blocked until this time
     bool voice_detected_in_session_ = false;
+    int64_t voice_detected_first_at_us_ = 0;
+    int64_t voice_detected_last_at_us_ = 0;
     bool waiting_for_server_response_ = false;
     int64_t wait_response_started_at_us_ = 0;
     int clock_ticks_ = 0;

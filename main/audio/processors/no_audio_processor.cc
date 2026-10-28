@@ -5,10 +5,10 @@
 #define TAG "NoAudioProcessor"
 
 namespace {
-constexpr int32_t kSpeechPeakThreshold = 1400;
-constexpr int32_t kSilencePeakThreshold = 800;
-constexpr int kSpeechFramesToTrigger = 3;
-constexpr int kVadSilenceHoldMs = 1000;
+constexpr int32_t kSpeechPeakThreshold = 1800;
+constexpr int32_t kSilencePeakThreshold = 900;
+constexpr int kSpeechFramesToTrigger = 4;
+constexpr int kVadSilenceHoldMs = 1200;
 }
 
 void NoAudioProcessor::Initialize(AudioCodec* codec, int frame_duration_ms, srmodel_list_t* models_list) {
